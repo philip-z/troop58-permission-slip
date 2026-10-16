@@ -1,0 +1,168 @@
+.form-header {
+  text-align: center;
+  margin-bottom: 15px;
+}
+
+.form-header select {
+  font-size: 1.5rem;
+  font-weight: bold;
+  padding: 6px 12px;
+  border: 2px solid #0055a5;
+  border-radius: 6px;
+  background-color: #f8fbfd;
+  color: #1a237e;
+  cursor: pointer;
+  outline: none;
+}
+
+.form-header select:focus {
+  border-color: #003366;
+  box-shadow: 0 0 5px rgba(0, 85, 165, 0.3);
+}
+
+/* Generic selector for any field containing "signature" in name or placeholder */
+input[placeholder*="initial" i],
+input[name*="signature" i] {
+  font-family: 'Caveat', cursive;
+  font-size: 24px;
+  color: #1a237e;
+  /* Navy blue pen ink */
+  border: none;
+  border-bottom: 2px solid #333;
+  border-radius: 0;
+  background: transparent;
+  padding: 2px 4px;
+  outline: none;
+}
+
+/* Generic placeholder styling for signature fields */
+input[placeholder*="initial" i]::placeholder,
+input[name*="signature" i]::placeholder {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  color: #777;
+  font-weight: normal;
+}
+
+/* Generic focus line */
+input[placeholder*="initial" i],
+input[name*="signature" i]:focus {
+  border-bottom-color: #0055a5;
+  background-color: #f8fbff;
+}
+
+body {
+  font-family: 'Times New Roman', Times, serif;
+  margin: 0;
+  padding: 20px;
+  background-color: #f4f4f9;
+}
+
+.container {
+  max-width: 800px;
+  margin: auto;
+  background: white;
+  padding: 40px;
+  border: 1px solid #ccc;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+  position: relative;
+}
+
+.troop-logo {
+  position: absolute;
+  top: 40px;
+  left: 40px;
+  width: 150px;
+  height: auto;
+}
+
+h1,
+h2,
+h3 {
+  text-align: center;
+  margin: 5px 0;
+}
+
+h1 {
+  font-size: 28px;
+}
+
+.details {
+  margin: 25px 0;
+  line-height: 1.6;
+  font-size: 16px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+label {
+  font-weight: bold;
+  display: block;
+  margin-bottom: 5px;
+}
+
+.input-long {
+  width: 100%;
+}
+
+input[type="text"],
+input[type="date"],
+input[type="tel"] {
+  padding: 10px;
+  box-sizing: border-box;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.radio-group {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.radio-group label {
+  display: inline;
+  font-weight: normal;
+  margin-bottom: 0;
+}
+
+.agreement {
+  margin: 30px 0;
+  padding: 20px;
+  border: 2px solid #000;
+  background-color: #fafafa;
+}
+
+button {
+  background-color: #0055A5;
+  color: white;
+  padding: 12px 20px;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  display: block;
+  width: 100%;
+  margin-top: 30px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+button:hover {
+  background-color: #004080;
+}
+
+#message {
+  text-align: center;
+  margin-top: 20px;
+  font-weight: bold;
+  color: #2e7d32;
+  font-size: 18px;
+}
+
+hr {
+  margin: 30px 0;
+  border: 0;
+  border-top: 1px solid #ccc;
+}
