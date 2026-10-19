@@ -146,7 +146,7 @@ function restoreFormDraft() {
 // Initialize GIS on page load
 window.onload = function () {
   google.accounts.id.initialize({
-    client_id: "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    client_id: "1059045077738-ohkb0nupq7kh69kj3i5io9n1rbjmfn8m.apps.googleusercontent.com",
     callback: handleCredentialResponse
   });
 
