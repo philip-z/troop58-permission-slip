@@ -161,6 +161,9 @@ function handleCredentialResponse(response) {
   // Decode JWT token payload
   const responsePayload = parseJwt(response.credential);
   
+  // Save the Google ID globally so the submit button can find it later
+  window.currentUserGoogleId = responsePayload.sub;
+
   // 1. Safely auto-fill contact details if the inputs exist in HTML
   const pName = document.getElementById("parentName");
   const pEmail = document.getElementById("parentEmail");
