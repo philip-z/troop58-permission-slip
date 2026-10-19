@@ -18,17 +18,23 @@ function loadTripDetails() {
   fetch(APPS_SCRIPT_URL)
     .then(res => res.json())
     .then(data => {
-      if (data.tripTitle) document.getElementById('tripTitle').innerText = data.tripTitle;
-      if (data.location) document.getElementById('tripLocation').innerText = data.location;
-      if (data.dates) document.getElementById('tripDates').innerText = data.dates;
-      if (data.returnDetails) document.getElementById('returnDetails').innerText = data.returnDetails;
-      if (data.cost) document.getElementById('tripCost').innerText = data.cost;
-      if (data.coordinator) document.getElementById('tripCoordinator').innerText = data.coordinator;
-      if (data.uniform) document.getElementById('tripUniform').innerText = data.uniform;
-      
-      if (data.departureHtml) {
-        document.getElementById('departureContainer').innerHTML = data.departureHtml;
-      }
+      // Loop over every key returned from the Spreadsheet / Apps Script API
+      Object.keys(data).forEach(key => {
+        const val = data[key];
+        if (val === undefined || val === null) return;
+
+        const element = document.getElementById(key);
+        if (element) {
+          // If the payload value contains HTML (e.g. custom departure radio buttons), inject innerHTML
+          if (typeof val === 'string' && (val.includes('<') && val.includes('>'))) {
+            element.innerHTML = val;
+          } else if ('value' in element && (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.tagName === 'SELECT')) {
+            element.value = val;
+          } else {
+            element.innerText = val;
+          }
+        }
+      });
     })
     .catch(err => console.error("Error loading trip data:", err));
 }
@@ -60,6 +66,7 @@ function handleFormSubmit(e) {
   .then(response => {
     if (response.status === 'success') {
       alert("Permission slip submitted successfully! Thank you.");
+      if (window.currentUserGoogleId) saveUserProfile(window.currentGoogleUserId); // Save profile for future auto-fill
       localStorage.removeItem(DRAFT_KEY);
       form.reset();
       toggleFormType();
@@ -112,9 +119,8 @@ function toggleRequired(container, enable) {
 function saveFormDraft() {
   const form = document.getElementById('permissionForm');
   if (!form) return;
-  const formData = new FormData(form);
-  const data = {};
-  formData.forEach((value, key) => { data[key] = value; });
+  const data = extractFormData(form, { skipSignatures: false });
+  data._tripId = window.currentTripId || null;
   localStorage.setItem(DRAFT_KEY, JSON.stringify(data));
 }
 
@@ -123,13 +129,196 @@ function restoreFormDraft() {
   if (!savedData) return;
   try {
     const data = JSON.parse(savedData);
+    if (data._tripId && window.currentTripId && data._tripId !== window.currentTripId) {
+      localStorage.removeItem(DRAFT_KEY);
+      return;
+    }
     const form = document.getElementById('permissionForm');
-    Object.keys(data).forEach(key => {
-      const el = form.querySelector(`[name="${key}"]`);
-      if (el) el.value = data[key];
-    });
+    populateFormFields(form, data, { skipSignatures: false });
     toggleFormType();
   } catch (e) {
     console.error(e);
+  }
+}
+
+// Initialize GIS on page load
+window.onload = function () {
+  google.accounts.id.initialize({
+    client_id: "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    callback: handleCredentialResponse
+  });
+
+  google.accounts.id.renderButton(
+    document.getElementById("googleSignInBtn"),
+    { theme: "outline", size: "large" }
+  );
+};
+
+// Handle successful sign-in
+function handleCredentialResponse(response) {
+  // Decode JWT token payload
+  const responsePayload = parseJwt(response.credential);
+  
+  // 1. Auto-fill contact details
+  document.getElementById("parentName").value = responsePayload.name;
+  document.getElementById("parentEmail").value = responsePayload.email;
+
+  // 2. Retrieve & load saved user profile from localStorage or backend
+  loadUserProfile(responsePayload.sub);
+
+  // 3. ENFORCE CLEAN SIGNATURE STATE
+  // Explicitly clear signature fields so typing a name is required for every submission
+  const sigInput = document.getElementById("parentSignature");
+  if (sigInput) sigInput.value = "";
+}
+
+function saveUserProfile(googleUserId) {
+  if (!googleUserId) return;
+  const form = document.getElementById('permissionForm');
+  const profileData = extractFormData(form, { skipSignatures: true });
+
+  fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    body: JSON.stringify({
+      action: 'saveProfile',
+      googleUserId: googleUserId,
+      profileData: profileData
+    })
+  }).catch(err => console.error("Profile save error:", err));
+}
+
+// Simple JWT parser helper
+function parseJwt(token) {
+  const base64Url = token.split('.')[1];
+  const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(window.atob(base64));
+}
+
+// Updated loadUserProfile to fetch from Backend API for multi-device support
+function loadUserProfile(googleUserId) {
+  if (!googleUserId) return;
+
+  // 1. Try local cache first for instant loading
+  const localCache = localStorage.getItem(`user_profile_${googleUserId}`);
+  if (localCache) {
+    populateFormFields(document.getElementById('permissionForm'), JSON.parse(localCache), { skipSignatures: true });
+    return; // Exit early if local cache is found
+  }
+
+  // 2. Fetch fresh profile from Google Apps Script backend (Multi-Device Sync)
+  fetch(`${APPS_SCRIPT_URL}?action=getProfile&googleUserId=${googleUserId}`)
+    .then(res => res.json())
+    .then(profileData => {
+      if (profileData && !profileData.error) {
+        // Populate form with cross-device data
+        populateFormFields(document.getElementById('permissionForm'), profileData, { skipSignatures: true });
+        
+        // Update local cache
+        localStorage.setItem(`user_profile_${googleUserId}`, JSON.stringify(profileData));
+        
+        // Keep active draft updated
+        saveFormDraft(window.currentTripId);
+      }
+    })
+    .catch(err => console.log('Offline or profile fetch error:', err));
+}
+
+// Render the Scout selection UI dynamically
+function renderYouthSelector(youthProfiles) {
+  let selector = document.getElementById('scoutSelector');
+  const youthContainer = document.getElementById('scoutSelectorContainer');
+
+  if (!youthProfiles || youthProfiles.length === 0) {
+    if (youthContainer) youthContainer.style.display = 'none';
+    return;
+  }
+
+  // If container doesn't exist, create it above the Scout Name field
+  if (!selector) {
+    const html = `
+      <div id="scoutSelectorContainer" class="form-group" style="background: #eef5fc; padding: 12px; border-radius: 6px; margin-bottom: 15px;">
+        <label for="scoutSelector"><strong>Select Scout to Pre-fill:</strong></label>
+        <select id="scoutSelector" onchange="onScoutSelected(this.value)" style="width: 100%; padding: 8px; margin-top: 5px;">
+          <option value="">-- Choose a Scout --</option>
+          ${youthProfiles.map((y, idx) => `<option value="${idx}">${y.scoutName} (${y.patrol || 'Troop 58'})</option>`).join('')}
+          <option value="new">+ Add Another Scout</option>
+        </select>
+      </div>
+    `;
+    const scoutSection = document.getElementById('youthSection') || document.getElementById('scoutName').parentNode;
+    scoutSection.insertAdjacentHTML('afterbegin', html);
+    selector = document.getElementById('scoutSelector');
+  }
+
+  // Cache profiles in memory for quick toggling
+  window.userYouthProfiles = youthProfiles;
+}
+
+// Handle switching between Scouts
+function onScoutSelected(selectedIndex) {
+  if (selectedIndex === "" || selectedIndex === "new") {
+    // Clear Scout fields for a fresh entry
+    document.getElementById('scoutName').value = "";
+    if (document.getElementById('patrol')) document.getElementById('patrol').value = "";
+    if (document.getElementById('dietary')) document.getElementById('dietary').value = "";
+    return;
+  }
+
+  const selectedScout = window.userYouthProfiles[selectedIndex];
+  if (!selectedScout) return;
+
+  // Auto-fill Scout fields
+  if (document.getElementById('scoutName')) document.getElementById('scoutName').value = selectedScout.scoutName || "";
+  if (document.getElementById('patrol')) document.getElementById('patrol').value = selectedScout.patrol || "";
+  if (document.getElementById('dietary')) document.getElementById('dietary').value = selectedScout.dietary || "";
+  if (document.getElementById('medical')) document.getElementById('medical').value = selectedScout.medical || "";
+
+  // Trigger local draft update so refreshing remembers the currently selected Scout
+  saveFormDraft(window.currentTripId);
+}
+
+// Helper to identify signature/date fields dynamically
+function isSignatureOrDateField(key) {
+  const k = key.toLowerCase();
+  return k.includes('signature') || k.includes('sigdate') || k.includes('sign_date');
+}
+
+// Dynamically extracts form data into an object
+function extractFormData(form, options = { skipSignatures: false }) {
+  const formData = new FormData(form);
+  const data = {};
+  formData.forEach((value, key) => {
+    if (options.skipSignatures && isSignatureOrDateField(key)) return;
+    if (data[key]) {
+      if (!Array.isArray(data[key])) data[key] = [data[key]];
+      data[key].push(value);
+    } else {
+      data[key] = value;
+    }
+  });
+  return data;
+}
+
+// Dynamically populates form inputs from an object
+function populateFormFields(form, data, options = { skipSignatures: false }) {
+  Object.keys(data).forEach(key => {
+    if (key.startsWith('_')) return; 
+    if (options.skipSignatures && isSignatureOrDateField(key)) return;
+
+    const elements = form.querySelectorAll(`[name="${key}"]`);
+    const value = data[key];
+
+    elements.forEach(el => {
+      if (el.type === 'checkbox' || el.type === 'radio') {
+        el.checked = Array.isArray(value) ? value.includes(el.value) : (el.value === value);
+      } else {
+        el.value = value;
+      }
+    });
+  });
+
+  // TRIGGER YOUTH SELECTOR IF ARRAY EXISTS
+  if (profileData.youthProfiles) {
+    renderYouthSelector(profileData.youthProfiles);
   }
 }

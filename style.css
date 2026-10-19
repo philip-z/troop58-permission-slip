@@ -45,10 +45,21 @@ input[name*="signature" i]::placeholder {
 }
 
 /* Generic focus line */
-input[placeholder*="initial" i],
+input[placeholder*="initial" i]:focus,
 input[name*="signature" i]:focus {
   border-bottom-color: #0055a5;
   background-color: #f8fbff;
+}
+
+/* Ensure signature fields have plenty of room to sign */
+input[name*="signature" i] {
+  width: 100%;
+}
+
+/* Keep initial fields short and inline */
+input[placeholder*="initial" i] {
+  width: 60px;
+  text-align: center;
 }
 
 body {
