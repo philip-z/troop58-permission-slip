@@ -161,9 +161,12 @@ function handleCredentialResponse(response) {
   // Decode JWT token payload
   const responsePayload = parseJwt(response.credential);
   
-  // 1. Auto-fill contact details
-  document.getElementById("parentName").value = responsePayload.name;
-  document.getElementById("parentEmail").value = responsePayload.email;
+  // 1. Safely auto-fill contact details if the inputs exist in HTML
+  const pName = document.getElementById("parentName");
+  const pEmail = document.getElementById("parentEmail");
+  
+  if (pName) pName.value = responsePayload.name;
+  if (pEmail) pEmail.value = responsePayload.email;
 
   // 2. Retrieve & load saved user profile from localStorage or backend
   loadUserProfile(responsePayload.sub);
@@ -320,7 +323,7 @@ function populateFormFields(form, data, options = { skipSignatures: false }) {
   });
 
   // TRIGGER YOUTH SELECTOR IF ARRAY EXISTS
-  if (profileData.youthProfiles) {
-    renderYouthSelector(profileData.youthProfiles);
+  if (data.youthProfiles) {
+    renderYouthSelector(data.youthProfiles);
   }
 }
