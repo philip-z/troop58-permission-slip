@@ -5,6 +5,9 @@ document.addEventListener('DOMContentLoaded', function() {
   loadTripDetails();
   restoreFormDraft();
 
+  // Force the toggle to run on page load to strip 'required' from hidden fields
+  toggleFormType();
+
   const form = document.getElementById('permissionForm');
   if (form) {
     form.addEventListener('input', saveFormDraft);
@@ -85,7 +88,7 @@ function handleFormSubmit(e) {
 
 // Youth/Adult Form Switcher
 function toggleFormType() {
-  var formType = document.getElementById('formType').value;
+  var formType = document.getElementById('formType').value.toLowerCase();
   var youthSec = document.getElementById('youthSection');
   var adultSec = document.getElementById('adultSection');
 
@@ -135,7 +138,6 @@ function restoreFormDraft() {
     }
     const form = document.getElementById('permissionForm');
     populateFormFields(form, data, { skipSignatures: false });
-    toggleFormType();
   } catch (e) {
     console.error(e);
   }
