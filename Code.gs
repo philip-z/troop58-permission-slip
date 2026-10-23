@@ -399,74 +399,80 @@ function getUserProfile(googleUserId) {
 
 // Save or update profile for a (verified) Google User ID
 function saveOrUpdateUserProfile(googleUserId, profileData) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('Profiles');
-  var headers = [];
-  var id = String(googleUserId);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Profiles');
+    var headers = [];
+    var id = String(googleUserId);
 
-  // 1. Ensure the Profiles sheet and the ID column exist
-  if (!sheet) {
-    sheet = ss.insertSheet('Profiles');
-    headers = ["Google ID"];
-    sheet.appendRow(headers);
-    sheet.getRange(1, 1).setFontWeight("bold");
-  } else {
-    var lastCol = sheet.getLastColumn();
-    if (lastCol > 0) {
-      headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
-        return h.toString().trim();
-      });
-    }
-    if (headers.length === 0 || headers[0] === "") {
+    // 1. Ensure the Profiles sheet and the ID column exist
+    if (!sheet) {
+      sheet = ss.insertSheet('Profiles');
       headers = ["Google ID"];
-      sheet.getRange(1, 1).setValue("Google ID").setFontWeight("bold");
+      sheet.appendRow(headers);
+      sheet.getRange(1, 1).setFontWeight("bold");
+    } else {
+      var lastCol = sheet.getLastColumn();
+      if (lastCol > 0) {
+        headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+          return h.toString().trim();
+        });
+      }
+      if (headers.length === 0 || headers[0] === "") {
+        headers = ["Google ID"];
+        sheet.getRange(1, 1).setValue("Google ID").setFontWeight("bold");
+      }
     }
+
+    var headerMap = {};
+    headers.forEach(function(h, idx) {
+      if (h !== "") headerMap[h] = idx;
+    });
+
+    // 2. Create columns for new profile fields
+    Object.keys(profileData).forEach(function(key) {
+      if (key.startsWith('_') || key === 'Google ID') return;
+
+      if (!(key in headerMap)) {
+        var newColIdx = headers.length;
+        sheet.getRange(1, newColIdx + 1).setValue(key).setFontWeight("bold");
+        headers.push(key);
+        headerMap[key] = newColIdx;
+      }
+    });
+
+    var data = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+
+    // 3. Find if this user already has a row (string comparison)
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === id) {
+        rowIndex = i + 1; // Apps Script ranges are 1-based, array is 0-based
+        break;
+      }
+    }
+
+    var existingRow = rowIndex > 0 ? data[rowIndex - 1] : [];
+
+    // 4. Fields not in this save keep their previously saved value.
+    var rowPayload = headers.map(function(header, idx) {
+      if (header === "Google ID") return id;
+
+      var incoming = profileData[header];
+      if (incoming !== undefined && incoming !== null) {
+        return Array.isArray(incoming) ? incoming.join(', ') : incoming;
+      }
+      var prev = existingRow[idx];
+      return prev !== undefined ? prev : "";
+    });
+
+    // 5. Force column A to plain text so the long numeric Google ID isn't rounded.
+    var targetRow = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
+    sheet.getRange(targetRow, 1).setNumberFormat('@');
+    sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);
+  } finally {
+    lock.releaseLock();
   }
-
-  var headerMap = {};
-  headers.forEach(function(h, idx) {
-    if (h !== "") headerMap[h] = idx;
-  });
-
-  // 2. Create columns for new profile fields
-  Object.keys(profileData).forEach(function(key) {
-    if (key.startsWith('_') || key === 'Google ID') return;
-
-    if (!(key in headerMap)) {
-      var newColIdx = headers.length;
-      sheet.getRange(1, newColIdx + 1).setValue(key).setFontWeight("bold");
-      headers.push(key);
-      headerMap[key] = newColIdx;
-    }
-  });
-
-  var data = sheet.getDataRange().getValues();
-  var rowIndex = -1;
-
-  // 3. Find if this user already has a row (string comparison)
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === id) {
-      rowIndex = i + 1; // Apps Script ranges are 1-based, array is 0-based
-      break;
-    }
-  }
-
-  var existingRow = rowIndex > 0 ? data[rowIndex - 1] : [];
-
-  // 4. Fields not in this save keep their previously saved value.
-  var rowPayload = headers.map(function(header, idx) {
-    if (header === "Google ID") return id;
-
-    var incoming = profileData[header];
-    if (incoming !== undefined && incoming !== null) {
-      return Array.isArray(incoming) ? incoming.join(', ') : incoming;
-    }
-    var prev = existingRow[idx];
-    return prev !== undefined ? prev : "";
-  });
-
-  // 5. Force column A to plain text so the long numeric Google ID isn't rounded.
-  var targetRow = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
-  sheet.getRange(targetRow, 1).setNumberFormat('@');
-  sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);
 }
