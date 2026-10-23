@@ -1,3 +1,4 @@
+/* ---------- Existing CSS ---------- */
 .form-header {
   text-align: center;
   margin-bottom: 15px;
@@ -26,7 +27,6 @@ input[name*="signature" i] {
   font-family: 'Caveat', cursive;
   font-size: 24px;
   color: #1a237e;
-  /* Navy blue pen ink */
   border: none;
   border-bottom: 2px solid #333;
   border-radius: 0;
@@ -114,17 +114,28 @@ label {
   margin-bottom: 5px;
 }
 
+label.inline {
+  display: inline;
+  font-weight: normal;
+  margin: 0;
+}
+
 .input-long {
   width: 100%;
 }
 
 input[type="text"],
 input[type="date"],
-input[type="tel"] {
+input[type="tel"],
+input[type="number"] {
   padding: 10px;
   box-sizing: border-box;
   border: 1px solid #ccc;
   border-radius: 4px;
+}
+
+input[type="number"] {
+  width: 80px;
 }
 
 .radio-group {
@@ -177,3 +188,152 @@ hr {
   border: 0;
   border-top: 1px solid #ccc;
 }
+
+/* ---------- Additions ---------- */
+.signin {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 15px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+fieldset.form-section {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.scout-selector {
+  background: #eef5fc;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 15px;
+}
+
+.scout-selector select {
+  width: 100%;
+  padding: 8px;
+  margin-top: 5px;
+}
+
+@media (max-width: 640px) {
+  body {
+    padding: 8px;
+  }
+
+  .container {
+    padding: 16px;
+  }
+
+  .troop-logo {
+    position: static;
+    display: block;
+    width: 110px;
+    margin: 0 auto 10px;
+  }
+
+  .signin {
+    justify-content: center;
+  }
+
+  .form-header select {
+    font-size: 1.1rem;
+    width: 100%;
+  }
+
+  .agreement {
+    padding: 12px;
+  }
+
+  .agreement input[type="text"],
+  .agreement input[type="date"],
+  .agreement input[type="tel"],
+  .agreement input[type="number"] {
+    display: block;
+    width: 100%;
+    margin: 6px 0 12px;
+    font-size: 16px;
+    min-height: 44px;
+  }
+
+  .agreement input[type="radio"] {
+    width: auto;
+    min-height: 0;
+    margin: 0 4px;
+    transform: scale(1.3);
+  }
+
+  .agreement input[placeholder*="initial" i] {
+    display: inline-block;
+    width: 80px;
+  }
+
+  .training label.inline,
+  .vehicle label.inline {
+    display: block;
+    margin-top: 8px;
+  }
+
+  .training br,
+  .vehicle br {
+    display: none;
+  }
+
+  button {
+    min-height: 48px;
+    font-size: 18px;
+  }
+}
+
+@media print {
+  body {
+    background: #fff;
+    padding: 0;
+  }
+
+  .container {
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    max-width: 100%;
+  }
+
+  .signin,
+  .form-header select,
+  button,
+  #message {
+    display: none;
+  }
+
+  .print-header {
+    display: block;
+    text-align: center;
+    margin-bottom: 12px;
+    font-size: 18px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+}
+
+@media screen {
+  .print-header {
+    display: none;
+  }
+}
+
+
+
+																															            
