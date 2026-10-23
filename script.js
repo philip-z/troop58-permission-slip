@@ -209,20 +209,6 @@ function saveUserProfile() {
     cached.youthProfiles = list;
   }
   localStorage.setItem(cacheKey, JSON.stringify(Object.assign(cached, profileData)));
-
-  fetch(APPS_SCRIPT_URL, {
-    method: 'POST',
-    body: JSON.stringify({
-      action: 'saveProfile',
-      idToken: window.currentIdToken,
-      profileData: profileData
-    })
-  })
-  .then(res => res.json())
-  .then(r => {
-    if (r && r.status === 'error') console.warn('Profile not saved (sign in again?):', r.message);
-  })
-  .catch(err => console.error("Profile save error:", err));
 }
 
 function parseJwt(token) {
