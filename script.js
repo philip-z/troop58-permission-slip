@@ -31,7 +31,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
   toggleFormType();
   updatePrintHeader();
+});
 
+window.addEventListener('load', function() {
   if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
     google.accounts.id.initialize({
       client_id: "1059045077738-ohkb0nupq7kh69kj3i5io9n1rbjmfn8m.apps.googleusercontent.com",
@@ -311,7 +313,3 @@ function populateFormFields(form, data, options = { skipSignatures: false }) {
     renderYouthSelector(data.youthProfiles);
   }
 }
-
-
-
-																															            
