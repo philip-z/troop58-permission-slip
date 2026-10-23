@@ -27,6 +27,8 @@ document.addEventListener('DOMContentLoaded', function() {
     form.addEventListener('input', saveFormDraft);
     form.addEventListener('change', saveFormDraft);
     form.addEventListener('submit', handleFormSubmit);
+    const scoutSelector = document.getElementById('scoutSelector');
+    if (scoutSelector) scoutSelector.addEventListener('change', e => onScoutSelected(e.target.value));
   }
 
   toggleFormType();
@@ -255,29 +257,22 @@ function loadUserProfile(googleUserId) {
 }
 
 function renderYouthSelector(youthProfiles) {
-  const old = document.getElementById('scoutSelectorContainer');
-  if (old) old.remove();
+  const container = document.getElementById('scoutSelectorContainer');
+  const selector = document.getElementById('scoutSelector');
+  if (!container || !selector) return;
 
   window.userYouthProfiles = youthProfiles || [];
-  if (window.userYouthProfiles.length === 0) return;
+  container.hidden = window.userYouthProfiles.length === 0;
 
-  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-  const html = `
-    <div id="scoutSelectorContainer" class="scout-selector">
-      <label for="scoutSelector"><strong>Select Scout to Pre-fill:</strong></label>
-      <select id="scoutSelector">
-        <option value="">-- Choose a Scout --</option>
-        ${window.userYouthProfiles.map((y, idx) => `<option value="${idx}">${esc(y['Youth Name'])}</option>`).join('')}
-        <option value="new">+ Add Another Scout</option>
-      </select>
-    </div>
-  `;
-
-  const scoutSection = document.getElementById('youthSection');
-  if (scoutSection) scoutSection.querySelector('legend').insertAdjacentHTML('afterend', html);
-  document.getElementById('scoutSelector').addEventListener('change', e => onScoutSelected(e.target.value));
+  selector.querySelectorAll('option[data-scout]').forEach(o => o.remove());
+  const addNew = selector.querySelector('option[value="new"]');
+  window.userYouthProfiles.forEach((y, idx) => {
+    const opt = document.createElement('option');
+    opt.value = idx;
+    opt.dataset.scout = '1';
+    opt.textContent = y['Youth Name'] || '';
+    selector.insertBefore(opt, addNew);
+  });
 }
 
 function onScoutSelected(selectedIndex) {
