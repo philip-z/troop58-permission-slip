@@ -207,6 +207,7 @@ function saveUserProfile() {
     const i = list.findIndex(y => String(y['Youth Name'] || '').trim().toLowerCase() === youthName.toLowerCase());
     if (i >= 0) list[i] = Object.assign(list[i], youthFields); else list.push(youthFields);
     cached.youthProfiles = list;
+    renderYouthSelector(list);
   }
   localStorage.setItem(cacheKey, JSON.stringify(Object.assign(cached, profileData)));
 }
