@@ -52,6 +52,16 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    // ARCHIVE: Generate a PDF of this submission and file it in Drive under the trip's folder.
+    // A PDF failure must never block the submission itself, so it is caught and logged.
+    // Always overwrite 'PDF Link' so a client can't spoof it.
+    data['PDF Link'] = '';
+    try {
+      data['PDF Link'] = archiveSubmissionPdf_(data).getUrl();
+    } catch (pdfErr) {
+      console.error('PDF archive failed: ' + pdfErr);
+    }
+
     // ... [Rest of your existing doPost code for saving Responses] ...
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('Responses') || ss.getSheets()[1];
@@ -115,6 +125,146 @@ function doPost(e) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+// ---------------------------------------------------------------------------
+// PDF ARCHIVE
+// Layout in Drive (next to the spreadsheet):
+//   <folder containing the sheet>/Permission Slips/<Trip title - dates>/<slip>.pdf
+// Duplicate submissions are all kept: every filename carries a timestamp.
+// ---------------------------------------------------------------------------
+
+function archiveSubmissionPdf_(data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var now = new Date();
+  var trip = getLatestTripConfig_(ss);
+
+  // Only the folder lookup/creation is locked, so two simultaneous submissions
+  // can't create duplicate trip folders.
+  var tripFolder;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var root = DriveApp.getFileById(ss.getId()).getParents().next();
+    var slipsFolder = getOrCreateFolder_(root, 'Permission Slips');
+    tripFolder = getOrCreateFolder_(slipsFolder, tripFolderName_(trip));
+  } finally {
+    lock.releaseLock();
+  }
+
+  var pdf = HtmlService.createHtmlOutput(renderSlipHtml_(data, trip, now))
+    .getBlob()
+    .getAs('application/pdf')
+    .setName(slipFileName_(data, now) + '.pdf');
+
+  return tripFolder.createFile(pdf);
+}
+
+function getOrCreateFolder_(parent, name) {
+  var it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+
+// Reads the latest row of the Trips sheet (same source doGet uses). The trip
+// always comes from the server, never from the browser.
+function getLatestTripConfig_(ss) {
+  var config = {};
+  var sheet = ss.getSheetByName('Trips');
+  if (!sheet) return config;
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return config;
+
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var row = sheet.getRange(lastRow, 1, 1, lastCol).getValues()[0];
+  headers.forEach(function(h, i) {
+    var key = h.toString().trim();
+    if (key !== '') config[key] = row[i];
+  });
+  return config;
+}
+
+function displayValue_(v) {
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), 'MMM d, yyyy');
+  }
+  return v === undefined || v === null ? '' : String(v);
+}
+
+function safeName_(s) {
+  return String(s || '')
+    .replace(/[\\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 100);
+}
+
+function tripFolderName_(trip) {
+  var title = displayValue_(trip.tripTitle);
+  var dates = displayValue_(trip.tripDates);
+  var name = safeName_(title + (dates ? ' - ' + dates : ''));
+  return name || 'Unknown Trip';
+}
+
+function slipFileName_(data, now) {
+  var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
+  var person = isAdult ? data['Adult Name'] : data['Youth Name'];
+  var stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HHmmss');
+  return safeName_((isAdult ? 'Adult' : 'Youth') + ' - ' + (person || 'Unnamed') + ' - ' + stamp);
+}
+
+function escapeHtml_(s) {
+  return String(s === undefined || s === null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Builds a simple HTML document for the PDF. Apps Script's HTML-to-PDF
+// converter supports only basic CSS, so this is a clean record of the slip,
+// not a pixel copy of the web page. EVERY submitted value is escaped.
+// NOTE: the statements below are a copy of the wording on the web form. If the
+// wording in index.html changes, update it here too.
+function renderSlipHtml_(data, trip, now) {
+  var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
+  var tz = Session.getScriptTimeZone();
+
+  var statements = isAdult
+    ? ['I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for me, should the need arise.']
+    : ['I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for my son, should the need arise.',
+       'I have read and understand this form, and I agree to comply with Troop 58\u2019s electronic device policies to provide a distraction free outdoor experience for all participants.'];
+  var esign = 'By typing their full legal name and clicking Submit, the signer acknowledged that the typed name is their official, legal, and binding signature, equivalent to a handwritten signature.';
+
+  var skip = { 'Form Type': true, 'PDF Link': true, 'action': true };
+  var rows = Object.keys(data).filter(function(k) {
+    return !k.startsWith('_') && !skip[k];
+  }).map(function(k) {
+    var v = data[k];
+    if (Array.isArray(v)) v = v.join(', ');
+    var isSig = k.toLowerCase().indexOf('signature') !== -1 && k.toLowerCase().indexOf('date') === -1;
+    var valHtml = escapeHtml_(v);
+    if (isSig) valHtml = '<i style="font-size:15pt;">' + valHtml + '</i>';
+    return '<tr><td style="width:38%;padding:4px 6px;border-bottom:1px solid #ddd;color:#444;"><b>' +
+      escapeHtml_(k) + '</b></td><td style="padding:4px 6px;border-bottom:1px solid #ddd;">' + valHtml + '</td></tr>';
+  }).join('');
+
+  var tripLines = [
+    ['Location', trip.tripLocation], ['Dates', trip.tripDates],
+    ['Cost', trip.tripCost], ['Coordinator', trip.tripCoordinator]
+  ].filter(function(p) { return displayValue_(p[1]) !== ''; })
+   .map(function(p) { return '<b>' + p[0] + ':</b> ' + escapeHtml_(displayValue_(p[1])); })
+   .join(' &nbsp;|&nbsp; ');
+
+  return '<html><body style="font-family:Times New Roman,serif;font-size:11pt;">' +
+    '<h2 style="text-align:center;margin:0;">BSA Troop 58 Elsmere</h2>' +
+    '<h3 style="text-align:center;margin:2px 0;">' + escapeHtml_(displayValue_(trip.tripTitle)) + '</h3>' +
+    '<p style="text-align:center;margin:2px 0;">' + tripLines + '</p>' +
+    '<h3 style="text-align:center;margin:12px 0 6px;">' + (isAdult ? 'ADULT' : 'YOUTH') + ' PERMISSION SLIP</h3>' +
+    '<table style="width:100%;border-collapse:collapse;">' + rows + '</table>' +
+    '<p style="margin-top:14px;">' + statements.map(escapeHtml_).join('<br><br>') + '</p>' +
+    '<p style="font-size:10pt;color:#333;">' + escapeHtml_(esign) + '</p>' +
+    '<p style="font-size:9pt;color:#666;">Submitted electronically: ' +
+      Utilities.formatDate(now, tz, 'MMM d, yyyy h:mm:ss a z') + '</p>' +
+    '</body></html>';
 }
 
 // Fetch saved profile by Google User ID dynamically
