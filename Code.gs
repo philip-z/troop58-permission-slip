@@ -47,7 +47,7 @@ function doPost(e) {
     
     // ROUTER: If frontend is saving a profile, route it and stop.
     if (data.action === 'saveProfile' && data.googleUserId) {
-      saveOrUpdateUserProfile(data.googleUserId, data.profileData);
+      saveOrUpdateUserProfile(data.googleUserId, data.profileData || {});
       return ContentService.createTextOutput(JSON.stringify({ status: "success" }))
         .setMimeType(ContentService.MimeType.JSON);
     }
@@ -117,7 +117,7 @@ function doPost(e) {
   }
 }
 
-// Add to Code.gs: Fetch saved profile by Google User ID dynamically
+// Fetch saved profile by Google User ID dynamically
 function getUserProfile(googleUserId) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -129,18 +129,24 @@ function getUserProfile(googleUserId) {
 
     // 1. Read exact headers from Row 1
     var headers = data[0].map(function(h) { return h.toString().trim(); });
+    var id = String(googleUserId);
     
-    // 2. Search row by row for matching Google ID in Column A (index 0)
+    // 2. Search row by row for matching Google ID in Column A (index 0).
+    //    Compare as strings: Sheets may hand back the ID as a number.
     for (var i = 1; i < data.length; i++) {
-      if (data[i][0] === googleUserId) {
+      if (String(data[i][0]) === id) {
         
         var profile = {};
         // 3. Dynamically map every sheet column to the profile object
         for (var j = 1; j < headers.length; j++) {
           var key = headers[j];
-          if (key !== "") {
-            profile[key] = data[i][j];
+          if (key === "") continue;
+          var v = data[i][j];
+          // Dates must be yyyy-MM-dd for <input type="date"> to accept them
+          if (v instanceof Date) {
+            v = Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
           }
+          profile[key] = v;
         }
         return profile;
       }
@@ -152,17 +158,19 @@ function getUserProfile(googleUserId) {
   }
 }
 
-// Add to Code.gs: Save or update profile on submission dynamically
+// Save or update profile on submission dynamically
 function saveOrUpdateUserProfile(googleUserId, profileData) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Profiles');
   var headers = [];
+  var id = String(googleUserId);
   
   // 1. Ensure the Profiles sheet and the ID column exist
   if (!sheet) {
     sheet = ss.insertSheet('Profiles');
     headers = ["Google ID"];
-    sheet.appendRow(headers).getRange(1, 1).setFontWeight("bold");
+    sheet.appendRow(headers);
+    sheet.getRange(1, 1).setFontWeight("bold");
   } else {
     var lastCol = sheet.getLastColumn();
     if (lastCol > 0) {
@@ -196,27 +204,32 @@ function saveOrUpdateUserProfile(googleUserId, profileData) {
   var data = sheet.getDataRange().getValues();
   var rowIndex = -1;
 
-  // 3. Find if this user already has a row
+  // 3. Find if this user already has a row (string comparison)
   for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === googleUserId) {
+    if (String(data[i][0]) === id) {
       rowIndex = i + 1; // Apps Script ranges are 1-based, array is 0-based
       break;
     }
   }
 
-  // 4. Build the row payload perfectly matching the dynamic header order
-  var rowPayload = headers.map(function(header) {
-    if (header === "Google ID") return googleUserId;
-    
-    return (profileData[header] !== undefined && profileData[header] !== null) 
-      ? profileData[header] 
-      : "";
+  var existingRow = rowIndex > 0 ? data[rowIndex - 1] : [];
+
+  // 4. Build the row payload. Fields not in this submission (e.g. the other
+  //    form type's section, which is disabled) keep their previously saved value.
+  var rowPayload = headers.map(function(header, idx) {
+    if (header === "Google ID") return id;
+
+    var incoming = profileData[header];
+    if (incoming !== undefined && incoming !== null) {
+      return Array.isArray(incoming) ? incoming.join(', ') : incoming;
+    }
+    var prev = existingRow[idx];
+    return prev !== undefined ? prev : "";
   });
 
-  // 5. Update the existing row, or append a new one
-  if (rowIndex > 0) {
-    sheet.getRange(rowIndex, 1, 1, rowPayload.length).setValues([rowPayload]);
-  } else {
-    sheet.appendRow(rowPayload);
-  }
+  // 5. Update the existing row, or write a new one. Force column A to plain
+  //    text so the long numeric Google ID is not converted to a rounded number.
+  var targetRow = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
+  sheet.getRange(targetRow, 1).setNumberFormat('@');
+  sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);
 }
