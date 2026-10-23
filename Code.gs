@@ -80,7 +80,7 @@ function doPost(e) {
 
     var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
     if (!(isAdult ? data['Adult Name'] : data['Youth Name'])) flags.push('Missing name');
-    if (!(isAdult ? data['Adult Signature'] : data['Youth Signature'])) flags.push('Missing signature');
+    if (isAdult ? !data['Adult Signature'] : (!data['Parent Signature'] || !data['Youth Signature'])) flags.push('Missing signature');
 
     // Always overwrite server-controlled columns so a client can't spoof them.
     data['PDF Link'] = '';
