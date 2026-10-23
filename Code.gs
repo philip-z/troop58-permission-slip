@@ -1,29 +1,32 @@
+// OAuth client ID that Google Sign-In tokens must be issued for. For production,
+// set a Script Property named OAUTH_CLIENT_ID instead of editing this default.
+var DEFAULT_OAUTH_CLIENT_ID = '1059045077738-ohkb0nupq7kh69kj3i5io9n1rbjmfn8m.apps.googleusercontent.com';
+
+// Per-request abuse limits. These only FLAG or trim; they never reject a submission,
+// and there is deliberately NO global rate limit (a burst of real parents must not be dropped).
+var MAX_FIELD_LENGTH = 1000;
+var MAX_KEY_LENGTH = 80;
+var MAX_FIELDS = 80;
+var MAX_PAYLOAD_CHARS = 60000;
+var HONEYPOT_FIELD = 'website_url';
+
 function doGet(e) {
   try {
-    // ROUTER: If frontend requests a profile, return it and stop.
-    if (e.parameter.action === 'getProfile' && e.parameter.googleUserId) {
-      var profile = getUserProfile(e.parameter.googleUserId);
-      return ContentService.createTextOutput(JSON.stringify(profile || {}))
-        .setMimeType(ContentService.MimeType.JSON);
-    }
-    
+    // Public, non-sensitive trip configuration only. Profiles are no longer served via GET.
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    // Searches for 'Trip Config', 'Trips', or defaults to the first tab
     var sheet = ss.getSheetByName('Trips');
     if (!sheet) {
       throw new Error("Trips configuration Missing");
-    }    
+    }
 
     var lastRow = sheet.getLastRow();
     var lastCol = sheet.getLastColumn();
     var config = {};
-    
+
     if (lastRow > 1 && lastCol > 0) {
-      // 1. Read raw headers from Row 1 and raw trip data from the latest row
       var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
       var tripData = sheet.getRange(lastRow, 1, 1, lastCol).getValues()[0];
-      
-      // 2. Map exact sheet column headers directly as keys
+
       headers.forEach(function(header, idx) {
         if (header && header.toString().trim() !== "") {
           var key = header.toString().trim();
@@ -41,47 +44,77 @@ function doGet(e) {
   }
 }
 
+function jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
 function doPost(e) {
   try {
-    var data = JSON.parse(e.postData.contents);
-    
-    // ROUTER: If frontend is saving a profile, route it and stop.
-    if (data.action === 'saveProfile' && data.googleUserId) {
-      saveOrUpdateUserProfile(data.googleUserId, data.profileData || {});
-      return ContentService.createTextOutput(JSON.stringify({ status: "success" }))
-        .setMimeType(ContentService.MimeType.JSON);
+    var raw = e.postData.contents;
+    var data = JSON.parse(raw);
+
+    // PROFILE ROUTES: the user ID comes ONLY from a verified Google ID token.
+    // Any googleUserId sent by the client is ignored.
+    if (data.action === 'getProfile') {
+      var readerId = verifyGoogleToken_(data.idToken);
+      if (!readerId) return jsonOut_({ error: 'unauthorized' });
+      return jsonOut_(getUserProfile(readerId) || {});
     }
 
-    // ARCHIVE: Generate a PDF of this submission and file it in Drive under the trip's folder.
-    // A PDF failure must never block the submission itself, so it is caught and logged.
-    // Always overwrite 'PDF Link' so a client can't spoof it.
+    if (data.action === 'saveProfile') {
+      var writerId = verifyGoogleToken_(data.idToken);
+      if (!writerId) return jsonOut_({ status: 'error', message: 'unauthorized' });
+      saveOrUpdateUserProfile(writerId, sanitizeFields_(data.profileData || {}, []));
+      return jsonOut_({ status: 'success' });
+    }
+
+    // SUBMISSION (anonymous, no sign-in required).
+    // Soft anti-spam: trim and flag, never reject.
+    var flags = [];
+    if (raw.length > MAX_PAYLOAD_CHARS) flags.push('Oversized payload');
+    var honeypotFilled = !!(data[HONEYPOT_FIELD] && String(data[HONEYPOT_FIELD]).trim() !== '');
+    if (honeypotFilled) flags.push('Honeypot filled');
+
+    data = sanitizeFields_(data, flags);
+
+    var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
+    if (!(isAdult ? data['Adult Name'] : data['Youth Name'])) flags.push('Missing name');
+    if (!(isAdult ? data['Adult Signature'] : data['Youth Signature'])) flags.push('Missing signature');
+
+    // Always overwrite server-controlled columns so a client can't spoof them.
     data['PDF Link'] = '';
-    try {
-      data['PDF Link'] = archiveSubmissionPdf_(data).getUrl();
-    } catch (pdfErr) {
-      console.error('PDF archive failed: ' + pdfErr);
+    // A honeypot hit is still saved as a row for review, but doesn't get a PDF in Drive.
+    // A PDF failure must never block the submission itself.
+    if (!honeypotFilled) {
+      try {
+        data['PDF Link'] = archiveSubmissionPdf_(data).getUrl();
+      } catch (pdfErr) {
+        console.error('PDF archive failed: ' + pdfErr);
+        flags.push('PDF failed');
+      }
     }
+    data['Flags'] = flags.join('; ');
 
-    // ... [Rest of your existing doPost code for saving Responses] ...
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('Responses') || ss.getSheets()[1];
-    
+
     var lastCol = sheet.getLastColumn();
     var headers = [];
-    
+
     // 1. Read existing exact headers from Row 1
     if (sheet.getLastRow() > 0 && lastCol > 0) {
       headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
         return h.toString().trim();
       });
     }
-    
+
     // 2. Ensure "Timestamp" is in Column 1
     if (headers.length === 0 || headers[0] === "") {
       headers = ["Timestamp"];
       sheet.getRange(1, 1, 1, 1).setValues([headers]).setFontWeight("bold");
     }
-    
+
     // 3. Map exact header strings to column array indexes
     var headerMap = {};
     headers.forEach(function(h, idx) {
@@ -89,42 +122,100 @@ function doPost(e) {
         headerMap[h] = idx;
       }
     });
-    
-    // 4. Inspect incoming JSON keys (skipping internal metadata like _tripId)
+
+    // 4. Add a column for any new incoming key
     Object.keys(data).forEach(function(key) {
-      if (key.startsWith('_')) return; // Ignore internal metadata
-      
-      // If the incoming JSON key is NOT an exact match to a column header, add it!
       if (!(key in headerMap)) {
         var newColIdx = headers.length;
-        
-        // Write the incoming key directly as the new column header title in Row 1
         sheet.getRange(1, newColIdx + 1).setValue(key).setFontWeight("bold");
-        
         headers.push(key);
         headerMap[key] = newColIdx;
       }
     });
-    
+
     // 5. Build row array matching header order exactly
     var rowData = headers.map(function(header) {
       if (header.toLowerCase() === "timestamp") return new Date();
-      
-      return (data[header] !== undefined && data[header] !== null) 
-        ? data[header] 
+
+      return (data[header] !== undefined && data[header] !== null)
+        ? data[header]
         : "";
     });
-    
+
     // 6. Append entry row
     sheet.appendRow(rowData);
-    
-    return ContentService.createTextOutput(JSON.stringify({ status: "success" }))
-      .setMimeType(ContentService.MimeType.JSON);
+
+    return jsonOut_({ status: "success" });
 
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: err.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonOut_({ status: "error", message: err.toString() });
   }
+}
+
+// ---------------------------------------------------------------------------
+// AUTH + INPUT HYGIENE
+// ---------------------------------------------------------------------------
+
+function getOAuthClientId_() {
+  return PropertiesService.getScriptProperties().getProperty('OAUTH_CLIENT_ID') || DEFAULT_OAUTH_CLIENT_ID;
+}
+
+// Returns the verified Google user ID (the token's 'sub'), or null if the token is invalid.
+function verifyGoogleToken_(idToken) {
+  if (!idToken || typeof idToken !== 'string') return null;
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = 'tok_' + Utilities.base64EncodeWebSafe(
+      Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, idToken));
+    var hit = cache.get(key);
+    if (hit) return hit;
+
+    var res = UrlFetchApp.fetch(
+      'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
+      { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+
+    var info = JSON.parse(res.getContentText());
+    if (info.aud !== getOAuthClientId_()) return null;      // must be minted for THIS client
+    if (Number(info.exp) * 1000 < Date.now()) return null;  // not expired
+    if (!info.sub) return null;
+
+    cache.put(key, String(info.sub), 300);
+    return String(info.sub);
+  } catch (err) {
+    console.error('Token verification failed: ' + err);
+    return null;
+  }
+}
+
+// Returns a cleaned copy: drops internal/server-controlled keys, caps key count and
+// value length (flagging when it trims), and flattens arrays/objects to strings.
+function sanitizeFields_(input, flags) {
+  var blocked = { 'action': true, 'idToken': true, 'googleUserId': true,
+                  'Flags': true, 'PDF Link': true };
+  blocked[HONEYPOT_FIELD] = true;
+
+  var clean = {};
+  var count = 0;
+  Object.keys(input || {}).forEach(function(key) {
+    if (key.charAt(0) === '_' || blocked[key] || key.length > MAX_KEY_LENGTH) return;
+    if (count >= MAX_FIELDS) {
+      if (flags.indexOf('Too many fields') === -1) flags.push('Too many fields');
+      return;
+    }
+    var v = input[key];
+    if (v === undefined || v === null) v = '';
+    if (Array.isArray(v)) v = v.join(', ');
+    else if (typeof v === 'object') v = JSON.stringify(v);
+    else v = String(v);
+    if (v.length > MAX_FIELD_LENGTH) {
+      v = v.substring(0, MAX_FIELD_LENGTH);
+      if (flags.indexOf('Field trimmed') === -1) flags.push('Field trimmed');
+    }
+    clean[key] = v;
+    count++;
+  });
+  return clean;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +325,7 @@ function renderSlipHtml_(data, trip, now) {
        'I have read and understand this form, and I agree to comply with Troop 58\u2019s electronic device policies to provide a distraction free outdoor experience for all participants.'];
   var esign = 'By typing their full legal name and clicking Submit, the signer acknowledged that the typed name is their official, legal, and binding signature, equivalent to a handwritten signature.';
 
-  var skip = { 'Form Type': true, 'PDF Link': true, 'action': true };
+  var skip = { 'Form Type': true, 'PDF Link': true, 'Flags': true, 'action': true };
   var rows = Object.keys(data).filter(function(k) {
     return !k.startsWith('_') && !skip[k];
   }).map(function(k) {
@@ -267,7 +358,7 @@ function renderSlipHtml_(data, trip, now) {
     '</body></html>';
 }
 
-// Fetch saved profile by Google User ID dynamically
+// Fetch saved profile by (verified) Google User ID
 function getUserProfile(googleUserId) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -277,17 +368,14 @@ function getUserProfile(googleUserId) {
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return null; // No users saved yet
 
-    // 1. Read exact headers from Row 1
     var headers = data[0].map(function(h) { return h.toString().trim(); });
     var id = String(googleUserId);
-    
-    // 2. Search row by row for matching Google ID in Column A (index 0).
-    //    Compare as strings: Sheets may hand back the ID as a number.
+
+    // Compare as strings: Sheets may hand back the ID as a number.
     for (var i = 1; i < data.length; i++) {
       if (String(data[i][0]) === id) {
-        
+
         var profile = {};
-        // 3. Dynamically map every sheet column to the profile object
         for (var j = 1; j < headers.length; j++) {
           var key = headers[j];
           if (key === "") continue;
@@ -308,13 +396,13 @@ function getUserProfile(googleUserId) {
   }
 }
 
-// Save or update profile on submission dynamically
+// Save or update profile for a (verified) Google User ID
 function saveOrUpdateUserProfile(googleUserId, profileData) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Profiles');
   var headers = [];
   var id = String(googleUserId);
-  
+
   // 1. Ensure the Profiles sheet and the ID column exist
   if (!sheet) {
     sheet = ss.insertSheet('Profiles');
@@ -339,10 +427,10 @@ function saveOrUpdateUserProfile(googleUserId, profileData) {
     if (h !== "") headerMap[h] = idx;
   });
 
-  // 2. Check incoming profileData for NEW fields and create columns automatically
+  // 2. Create columns for new profile fields
   Object.keys(profileData).forEach(function(key) {
-    if (key.startsWith('_') || key === 'Google ID') return; // Skip metadata
-    
+    if (key.startsWith('_') || key === 'Google ID') return;
+
     if (!(key in headerMap)) {
       var newColIdx = headers.length;
       sheet.getRange(1, newColIdx + 1).setValue(key).setFontWeight("bold");
@@ -364,8 +452,7 @@ function saveOrUpdateUserProfile(googleUserId, profileData) {
 
   var existingRow = rowIndex > 0 ? data[rowIndex - 1] : [];
 
-  // 4. Build the row payload. Fields not in this submission (e.g. the other
-  //    form type's section, which is disabled) keep their previously saved value.
+  // 4. Fields not in this save keep their previously saved value.
   var rowPayload = headers.map(function(header, idx) {
     if (header === "Google ID") return id;
 
@@ -377,8 +464,7 @@ function saveOrUpdateUserProfile(googleUserId, profileData) {
     return prev !== undefined ? prev : "";
   });
 
-  // 5. Update the existing row, or write a new one. Force column A to plain
-  //    text so the long numeric Google ID is not converted to a rounded number.
+  // 5. Force column A to plain text so the long numeric Google ID isn't rounded.
   var targetRow = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
   sheet.getRange(targetRow, 1).setNumberFormat('@');
   sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);

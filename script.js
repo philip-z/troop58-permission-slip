@@ -96,17 +96,17 @@ function handleFormSubmit(e) {
   .then(response => {
     if (response.status === 'success') {
       alert("Permission slip submitted successfully! Thank you.");
-      if (window.currentUserGoogleId) saveUserProfile(window.currentUserGoogleId);
+      if (window.currentIdToken) saveUserProfile();
       localStorage.removeItem(DRAFT_KEY);
       form.reset();
       toggleFormType();
       updatePrintHeader();
     } else {
-      alert("Submission error: " + response.message);
+      alert("Submission error: " + response.message + "\nYour entries are saved on this device. Please wait a minute and press Submit again.");
     }
   })
   .catch(err => {
-    alert("Network error submitting form. Please try again.");
+    alert("Network error submitting form. Your entries are saved on this device. Please wait a minute and press Submit again.");
     console.error(err);
   })
   .finally(() => {
@@ -156,6 +156,9 @@ function restoreFormDraft() {
 
 function handleCredentialResponse(response) {
   const responsePayload = parseJwt(response.credential);
+  // The raw ID token is what the server verifies. The decoded 'sub' is only
+  // used locally as a cache key; the server never trusts a client-supplied ID.
+  window.currentIdToken = response.credential;
   window.currentUserGoogleId = responsePayload.sub;
 
   const pName = document.getElementById('parentName');
@@ -171,11 +174,13 @@ function handleCredentialResponse(response) {
   });
 }
 
-function saveUserProfile(googleUserId) {
-  if (!googleUserId) return;
+function saveUserProfile() {
+  const googleUserId = window.currentUserGoogleId;
+  if (!googleUserId || !window.currentIdToken) return;
   const form = document.getElementById('permissionForm');
   const profileData = extractFormData(form, { skipSignatures: true });
   delete profileData['Form Type'];
+  delete profileData['website_url'];
 
   const cacheKey = `user_profile_${googleUserId}`;
   let cached = {};
@@ -186,10 +191,15 @@ function saveUserProfile(googleUserId) {
     method: 'POST',
     body: JSON.stringify({
       action: 'saveProfile',
-      googleUserId: googleUserId,
+      idToken: window.currentIdToken,
       profileData: profileData
     })
-  }).catch(err => console.error("Profile save error:", err));
+  })
+  .then(res => res.json())
+  .then(r => {
+    if (r && r.status === 'error') console.warn('Profile not saved (sign in again?):', r.message);
+  })
+  .catch(err => console.error("Profile save error:", err));
 }
 
 function parseJwt(token) {
@@ -207,7 +217,11 @@ function loadUserProfile(googleUserId) {
     return;
   }
 
-  fetch(`${APPS_SCRIPT_URL}?action=getProfile&googleUserId=${googleUserId}`)
+  // POST (not GET) so the token never appears in a URL or server log.
+  fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'getProfile', idToken: window.currentIdToken })
+  })
     .then(res => res.json())
     .then(profileData => {
       if (profileData && !profileData.error && Object.keys(profileData).length > 0) {

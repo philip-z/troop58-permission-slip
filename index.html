@@ -19,6 +19,12 @@
       <div id="googleSignInBtn" class="signin"></div>
       <img src="images/Troop58Logo.jpg" alt="Troop 58 Logo" class="troop-logo">
 
+      <!-- Honeypot: hidden from people, often filled by bots. Submissions with this filled are flagged, not rejected. -->
+      <div aria-hidden="true" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;">
+        <label for="website_url">Leave this field empty</label>
+        <input type="text" id="website_url" name="website_url" tabindex="-1" autocomplete="off">
+      </div>
+
       <div class="form-header">
         <label for="formType" class="sr-only">Form type</label>
         <select id="formType" name="Form Type">
