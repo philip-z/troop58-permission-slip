@@ -33,7 +33,7 @@ function logEvent_(stage, detail) {
 // the permission prompt if any scope is missing, and records each result in Log.
 function runDiagnostics() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  logEvent_('diag start', 'sheet=' + ss.getName() + ' user=' + Session.getEffectiveUser().getEmail());
+  logEvent_('diag start', 'diagnostics started');
   var steps = {
     'Drive parent folder': function() { return DriveApp.getFileById(ss.getId()).getParents().hasNext() ? 'ok' : 'NO PARENT FOLDER'; },
     'UrlFetch': function() { return UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=x', { muteHttpExceptions: true }).getResponseCode(); },
