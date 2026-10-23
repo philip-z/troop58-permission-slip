@@ -59,6 +59,7 @@ function doPost(e) {
     // Soft anti-spam: trim and flag, never reject.
     var flags = [];
     var submittedTripRevision = data._tripRevision;
+    var submittedIdToken = data._idToken;
     if (raw.length > MAX_PAYLOAD_CHARS) flags.push('Oversized payload');
     var honeypotFilled = !!(data[HONEYPOT_FIELD] && String(data[HONEYPOT_FIELD]).trim() !== '');
     if (honeypotFilled) flags.push('Honeypot filled');
@@ -95,7 +96,7 @@ function doPost(e) {
           });
         }
         console.error('PDF archive failed: ' + pdfErr);
-        flags.push('PDF failed');
+        flags.push('PDF failed: ' + String(pdfErr && pdfErr.message || pdfErr).substring(0, 200));
       }
     }
     data['Flags'] = flags.join('; ');
@@ -147,6 +148,23 @@ function doPost(e) {
 
     // 6. Append entry row
     sheet.appendRow(rowData);
+
+    // 7. Save the signed-in parent's profile (never blocks the submission).
+    if (submittedIdToken && !honeypotFilled) {
+      try {
+        var profileId = verifyGoogleToken_(submittedIdToken);
+        if (profileId) {
+          var profileData = {};
+          Object.keys(data).forEach(function(k) {
+            if (k === 'Form Type' || k.toLowerCase().indexOf('signature') !== -1) return;
+            profileData[k] = data[k];
+          });
+          saveOrUpdateUserProfile(profileId, profileData);
+        }
+      } catch (profErr) {
+        console.error('Profile save failed: ' + profErr);
+      }
+    }
 
     return jsonOut_({ status: "success" });
 

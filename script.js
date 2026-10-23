@@ -89,6 +89,7 @@ function handleFormSubmit(e) {
     }
   });
   payload._tripRevision = window.currentTripId || '';
+  if (window.currentIdToken) payload._idToken = window.currentIdToken;
 
   const submitBtn = form.querySelector('button[type="submit"]');
   if (submitBtn) submitBtn.disabled = true;
@@ -101,7 +102,7 @@ function handleFormSubmit(e) {
   .then(response => {
     if (response.status === 'success') {
       alert("Permission slip submitted successfully! Thank you.");
-      if (window.currentIdToken) saveUserProfile();
+      if (window.currentIdToken) saveUserProfile(); // also cache locally
       localStorage.removeItem(DRAFT_KEY);
       form.reset();
       toggleFormType();
