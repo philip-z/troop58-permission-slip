@@ -197,6 +197,15 @@ function saveUserProfile() {
   const cacheKey = `user_profile_${googleUserId}`;
   let cached = {};
   try { cached = JSON.parse(localStorage.getItem(cacheKey)) || {}; } catch (e) {}
+  const youthFields = {};
+  Object.keys(profileData).forEach(k => { if (k.startsWith('Youth ')) youthFields[k] = profileData[k]; });
+  const youthName = String(youthFields['Youth Name'] || '').trim();
+  if (youthName) {
+    const list = Array.isArray(cached.youthProfiles) ? cached.youthProfiles : [];
+    const i = list.findIndex(y => String(y['Youth Name'] || '').trim().toLowerCase() === youthName.toLowerCase());
+    if (i >= 0) list[i] = Object.assign(list[i], youthFields); else list.push(youthFields);
+    cached.youthProfiles = list;
+  }
   localStorage.setItem(cacheKey, JSON.stringify(Object.assign(cached, profileData)));
 
   fetch(APPS_SCRIPT_URL, {
@@ -246,54 +255,42 @@ function loadUserProfile(googleUserId) {
 }
 
 function renderYouthSelector(youthProfiles) {
-  let selector = document.getElementById('scoutSelector');
-  const youthContainer = document.getElementById('scoutSelectorContainer');
+  const old = document.getElementById('scoutSelectorContainer');
+  if (old) old.remove();
 
-  if (!youthProfiles || youthProfiles.length === 0) {
-    if (youthContainer) youthContainer.style.display = 'none';
-    return;
-  }
+  window.userYouthProfiles = youthProfiles || [];
+  if (window.userYouthProfiles.length === 0) return;
 
-  if (!selector) {
-    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-    const html = `
-      <div id="scoutSelectorContainer" class="scout-selector">
-        <label for="scoutSelector"><strong>Select Scout to Pre-fill:</strong></label>
-        <select id="scoutSelector">
-          <option value="">-- Choose a Scout --</option>
-          ${youthProfiles.map((y, idx) => `<option value="${idx}">${esc(y.scoutName)} (${esc(y.patrol || 'Troop 58')})</option>`).join('')}
-          <option value="new">+ Add Another Scout</option>
-        </select>
-      </div>
-    `;
+  const html = `
+    <div id="scoutSelectorContainer" class="scout-selector">
+      <label for="scoutSelector"><strong>Select Scout to Pre-fill:</strong></label>
+      <select id="scoutSelector">
+        <option value="">-- Choose a Scout --</option>
+        ${window.userYouthProfiles.map((y, idx) => `<option value="${idx}">${esc(y['Youth Name'])}</option>`).join('')}
+        <option value="new">+ Add Another Scout</option>
+      </select>
+    </div>
+  `;
 
-    const scoutSection = document.getElementById('youthSection');
-    if (scoutSection) scoutSection.querySelector('legend').insertAdjacentHTML('afterend', html);
-    selector = document.getElementById('scoutSelector');
-    selector.addEventListener('change', e => onScoutSelected(e.target.value));
-  }
-
-  window.userYouthProfiles = youthProfiles;
+  const scoutSection = document.getElementById('youthSection');
+  if (scoutSection) scoutSection.querySelector('legend').insertAdjacentHTML('afterend', html);
+  document.getElementById('scoutSelector').addEventListener('change', e => onScoutSelected(e.target.value));
 }
 
 function onScoutSelected(selectedIndex) {
-  if (selectedIndex === '' || selectedIndex === 'new') {
-    const scoutName = document.getElementById('scoutName');
-    if (scoutName) scoutName.value = '';
-    if (document.getElementById('patrol')) document.getElementById('patrol').value = '';
-    if (document.getElementById('dietary')) document.getElementById('dietary').value = '';
-    return;
-  }
+  const form = document.getElementById('permissionForm');
+  const youthFields = form.querySelectorAll('#youthSection [name^="Youth "]');
+  const selectedScout = (selectedIndex === '' || selectedIndex === 'new')
+    ? null : window.userYouthProfiles[selectedIndex];
+  if (selectedIndex !== '' && selectedIndex !== 'new' && !selectedScout) return;
 
-  const selectedScout = window.userYouthProfiles[selectedIndex];
-  if (!selectedScout) return;
-
-  if (document.getElementById('scoutName')) document.getElementById('scoutName').value = selectedScout.scoutName || '';
-  if (document.getElementById('patrol')) document.getElementById('patrol').value = selectedScout.patrol || '';
-  if (document.getElementById('dietary')) document.getElementById('dietary').value = selectedScout.dietary || '';
-  if (document.getElementById('medical')) document.getElementById('medical').value = selectedScout.medical || '';
+  youthFields.forEach(el => {
+    if (isSignatureOrDateField(el.name)) return;
+    el.value = selectedScout && selectedScout[el.name] != null ? selectedScout[el.name] : '';
+  });
 
   saveFormDraft(window.currentTripId);
 }
