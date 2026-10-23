@@ -180,7 +180,8 @@ function verifyGoogleToken_(idToken) {
     if (Number(info.exp) * 1000 < Date.now()) return null;  // not expired
     if (!info.sub) return null;
 
-    cache.put(key, String(info.sub), 300);
+    var ttl = Math.min(300, Math.floor(Number(info.exp) - Date.now() / 1000));
+    if (ttl > 0) cache.put(key, String(info.sub), ttl);
     return String(info.sub);
   } catch (err) {
     console.error('Token verification failed: ' + err);
