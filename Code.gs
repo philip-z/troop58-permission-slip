@@ -19,21 +19,7 @@ function doGet(e) {
       throw new Error("Trips configuration Missing");
     }
 
-    var lastRow = sheet.getLastRow();
-    var lastCol = sheet.getLastColumn();
-    var config = {};
-
-    if (lastRow > 1 && lastCol > 0) {
-      var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-      var tripData = sheet.getRange(lastRow, 1, 1, lastCol).getValues()[0];
-
-      headers.forEach(function(header, idx) {
-        if (header && header.toString().trim() !== "") {
-          var key = header.toString().trim();
-          config[key] = tripData[idx];
-        }
-      });
-    }
+    var config = getLatestTripConfig_(ss);
 
     return ContentService.createTextOutput(JSON.stringify(config))
       .setMimeType(ContentService.MimeType.JSON);
@@ -72,6 +58,7 @@ function doPost(e) {
     // SUBMISSION (anonymous, no sign-in required).
     // Soft anti-spam: trim and flag, never reject.
     var flags = [];
+    var submittedTripRevision = data._tripRevision;
     if (raw.length > MAX_PAYLOAD_CHARS) flags.push('Oversized payload');
     var honeypotFilled = !!(data[HONEYPOT_FIELD] && String(data[HONEYPOT_FIELD]).trim() !== '');
     if (honeypotFilled) flags.push('Honeypot filled');
@@ -82,21 +69,37 @@ function doPost(e) {
     if (!(isAdult ? data['Adult Name'] : data['Youth Name'])) flags.push('Missing name');
     if (isAdult ? !data['Adult Signature'] : (!data['Parent Signature'] || !data['Youth Signature'])) flags.push('Missing signature');
 
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var trip = getLatestTripConfig_(ss);
+    if (!submittedTripRevision || submittedTripRevision !== trip._tripRevision) {
+      return jsonOut_({
+        status: 'error',
+        code: 'trip_changed',
+        message: 'Trip details have changed. Reload the page, review the updated trip details, and sign again.'
+      });
+    }
+
     // Always overwrite server-controlled columns so a client can't spoof them.
     data['PDF Link'] = '';
     // A honeypot hit is still saved as a row for review, but doesn't get a PDF in Drive.
     // A PDF failure must never block the submission itself.
     if (!honeypotFilled) {
       try {
-        data['PDF Link'] = archiveSubmissionPdf_(data).getUrl();
+        data['PDF Link'] = archiveSubmissionPdf_(data, submittedTripRevision).getUrl();
       } catch (pdfErr) {
+        if (pdfErr.code === 'TRIP_CHANGED') {
+          return jsonOut_({
+            status: 'error',
+            code: 'trip_changed',
+            message: 'Trip details have changed. Reload the page, review the updated trip details, and sign again.'
+          });
+        }
         console.error('PDF archive failed: ' + pdfErr);
         flags.push('PDF failed');
       }
     }
     data['Flags'] = flags.join('; ');
 
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('Responses') || ss.getSheets()[1];
 
     var lastCol = sheet.getLastColumn();
@@ -226,10 +229,15 @@ function sanitizeFields_(input, flags) {
 // Duplicate submissions are all kept: every filename carries a timestamp.
 // ---------------------------------------------------------------------------
 
-function archiveSubmissionPdf_(data) {
+function archiveSubmissionPdf_(data, expectedTripRevision) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var now = new Date();
   var trip = getLatestTripConfig_(ss);
+  if (trip._tripRevision !== expectedTripRevision) {
+    var err = new Error('Trip details changed');
+    err.code = 'TRIP_CHANGED';
+    throw err;
+  }
 
   // Only the folder lookup/creation is locked, so two simultaneous submissions
   // can't create duplicate trip folders.
@@ -270,9 +278,17 @@ function getLatestTripConfig_(ss) {
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   var row = sheet.getRange(lastRow, 1, 1, lastCol).getValues()[0];
   headers.forEach(function(h, i) {
-    var key = h.toString().trim();
-    if (key !== '') config[key] = row[i];
+    if (h && h.toString().trim() !== '') {
+      config[h.toString().trim()] = row[i];
+    }
   });
+  config._tripRevision = Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(
+      Utilities.DigestAlgorithm.SHA_256,
+      JSON.stringify([headers, row]),
+      Utilities.Charset.UTF_8
+    )
+  ).replace(/=+$/, '');
   return config;
 }
 

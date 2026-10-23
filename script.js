@@ -54,6 +54,10 @@ function loadTripDetails() {
       Object.keys(data).forEach(key => {
         const val = data[key];
         if (val === undefined || val === null) return;
+        if (key === '_tripRevision') {
+          window.currentTripId = val;
+          return;
+        }
 
         const element = document.getElementById(key);
         if (element) {
@@ -84,6 +88,7 @@ function handleFormSubmit(e) {
       payload[key] = value;
     }
   });
+  payload._tripRevision = window.currentTripId || '';
 
   const submitBtn = form.querySelector('button[type="submit"]');
   if (submitBtn) submitBtn.disabled = true;
@@ -101,6 +106,12 @@ function handleFormSubmit(e) {
       form.reset();
       toggleFormType();
       updatePrintHeader();
+    } else if (response.code === 'trip_changed') {
+      form.querySelectorAll('input[name*="signature" i]').forEach(el => {
+        el.value = '';
+      });
+      saveFormDraft();
+      alert(response.message);
     } else {
       alert("Submission error: " + response.message + "\nYour entries are saved on this device. Please wait a minute and press Submit again.");
     }
