@@ -10,6 +10,45 @@ var MAX_FIELDS = 80;
 var MAX_PAYLOAD_CHARS = 60000;
 var HONEYPOT_FIELD = 'website_url';
 
+// Diagnostic log: appends a row to a 'Log' sheet. Never throws and never logs
+// tokens or personal data.
+var tokenFailReason_ = '';
+function logEvent_(stage, detail) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Log');
+    if (!sheet) {
+      sheet = ss.insertSheet('Log');
+      sheet.appendRow(['Timestamp', 'Stage', 'Detail']);
+      sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
+    }
+    sheet.appendRow([new Date(), stage, String(detail === undefined ? '' : detail).substring(0, 2000)]);
+  } catch (e) {
+    console.error('Log failed: ' + e);
+  }
+}
+
+// Run this once from the editor (select it in the function dropdown, click Run).
+// It exercises Drive, UrlFetch, Cache, Lock and the Log sheet so Google shows
+// the permission prompt if any scope is missing, and records each result in Log.
+function runDiagnostics() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  logEvent_('diag start', 'sheet=' + ss.getName() + ' user=' + Session.getEffectiveUser().getEmail());
+  var steps = {
+    'Drive parent folder': function() { return DriveApp.getFileById(ss.getId()).getParents().hasNext() ? 'ok' : 'NO PARENT FOLDER'; },
+    'UrlFetch': function() { return UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=x', { muteHttpExceptions: true }).getResponseCode(); },
+    'Cache': function() { CacheService.getScriptCache().put('diag', '1', 5); return 'ok'; },
+    'Lock': function() { var l = LockService.getScriptLock(); l.waitLock(5000); l.releaseLock(); return 'ok'; },
+    'Profiles sheet': function() { return ss.getSheetByName('Profiles') ? 'exists' : 'missing (created on first save)'; },
+    'Trips sheet': function() { return ss.getSheetByName('Trips') ? 'exists' : 'MISSING'; },
+    'PDF render': function() { return HtmlService.createHtmlOutput('<p>x</p>').getBlob().getAs('application/pdf').getBytes().length + ' bytes'; }
+  };
+  Object.keys(steps).forEach(function(name) {
+    try { logEvent_('diag ' + name, steps[name]()); }
+    catch (err) { logEvent_('diag ' + name + ' FAILED', err); }
+  });
+}
+
 function doGet(e) {
   try {
     // Public, non-sensitive trip configuration only. Profiles are no longer served via GET.
@@ -39,6 +78,7 @@ function doPost(e) {
   try {
     var raw = e.postData.contents;
     var data = JSON.parse(raw);
+    logEvent_('doPost', 'action=' + (data.action || 'submit') + ' hasToken=' + !!(data._idToken || data.idToken) + ' chars=' + raw.length);
 
     // PROFILE ROUTES: the user ID comes ONLY from a verified Google ID token.
     // Any googleUserId sent by the client is ignored.
@@ -50,8 +90,9 @@ function doPost(e) {
 
     if (data.action === 'saveProfile') {
       var writerId = verifyGoogleToken_(data.idToken);
-      if (!writerId) return jsonOut_({ status: 'error', message: 'unauthorized' });
+      if (!writerId) { logEvent_('saveProfile unauthorized', tokenFailReason_); return jsonOut_({ status: 'error', message: 'unauthorized' }); }
       saveOrUpdateUserProfile(writerId, sanitizeFields_(data.profileData || {}, []));
+      logEvent_('saveProfile ok', 'fields=' + Object.keys(data.profileData || {}).length);
       return jsonOut_({ status: 'success' });
     }
 
@@ -96,6 +137,7 @@ function doPost(e) {
           });
         }
         console.error('PDF archive failed: ' + pdfErr);
+        logEvent_('PDF failed', pdfErr + ' | ' + (pdfErr && pdfErr.stack || ''));
         flags.push('PDF failed: ' + String(pdfErr && pdfErr.message || pdfErr).substring(0, 200));
       }
     }
@@ -150,9 +192,11 @@ function doPost(e) {
     sheet.appendRow(rowData);
 
     // 7. Save the signed-in parent's profile (never blocks the submission).
+    if (!submittedIdToken) logEvent_('profile skipped', 'no _idToken in submission (not signed in, or old page cached)');
     if (submittedIdToken && !honeypotFilled) {
       try {
         var profileId = verifyGoogleToken_(submittedIdToken);
+        if (!profileId) logEvent_('profile skipped: token rejected', tokenFailReason_);
         if (profileId) {
           var profileData = {};
           Object.keys(data).forEach(function(k) {
@@ -160,9 +204,11 @@ function doPost(e) {
             profileData[k] = data[k];
           });
           saveOrUpdateUserProfile(profileId, profileData);
+          logEvent_('profile saved', 'fields=' + Object.keys(profileData).length);
         }
       } catch (profErr) {
         console.error('Profile save failed: ' + profErr);
+        logEvent_('profile save FAILED', profErr + ' | ' + (profErr && profErr.stack || ''));
       }
     }
 
@@ -183,7 +229,8 @@ function getOAuthClientId_() {
 
 // Returns the verified Google user ID (the token's 'sub'), or null if the token is invalid.
 function verifyGoogleToken_(idToken) {
-  if (!idToken || typeof idToken !== 'string') return null;
+  tokenFailReason_ = '';
+  if (!idToken || typeof idToken !== 'string') { tokenFailReason_ = 'missing token'; return null; }
   try {
     var cache = CacheService.getScriptCache();
     var key = 'tok_' + Utilities.base64EncodeWebSafe(
@@ -194,11 +241,11 @@ function verifyGoogleToken_(idToken) {
     var res = UrlFetchApp.fetch(
       'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
       { muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) return null;
+    if (res.getResponseCode() !== 200) { tokenFailReason_ = 'tokeninfo HTTP ' + res.getResponseCode() + ' ' + res.getContentText().substring(0, 200); return null; }
 
     var info = JSON.parse(res.getContentText());
-    if (info.aud !== getOAuthClientId_()) return null;      // must be minted for THIS client
-    if (Number(info.exp) * 1000 < Date.now()) return null;  // not expired
+    if (info.aud !== getOAuthClientId_()) { tokenFailReason_ = 'aud mismatch: token aud=' + info.aud + ' expected=' + getOAuthClientId_(); return null; }     // must be minted for THIS client
+    if (Number(info.exp) * 1000 < Date.now()) { tokenFailReason_ = 'token expired'; return null; }  // not expired
     if (!info.sub) return null;
 
     var ttl = Math.min(300, Math.floor(Number(info.exp) - Date.now() / 1000));
@@ -206,6 +253,7 @@ function verifyGoogleToken_(idToken) {
     return String(info.sub);
   } catch (err) {
     console.error('Token verification failed: ' + err);
+    tokenFailReason_ = 'exception: ' + err;
     return null;
   }
 }
