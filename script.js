@@ -1,7 +1,6 @@
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwWHDrP4c-V3IQ8lrb8xIF8uUl36InF7PcU_arJ5Lkh1I97W79LlQr6XbIIAy_c7ls5/exec";
 const DRAFT_KEY = 'troop58_form_draft';
 
-// Generate a simple print header based on the current form type
 function updatePrintHeader() {
   const formType = document.getElementById('formType');
   const header = document.getElementById('printHeader');
@@ -33,14 +32,15 @@ document.addEventListener('DOMContentLoaded', function() {
   toggleFormType();
   updatePrintHeader();
 
-  // Add print header to the DOM if it doesn't exist
-  if (!document.getElementById('printHeader')) {
-    const printHeader = document.createElement('div');
-    printHeader.id = 'printHeader';
-    printHeader.className = 'print-header';
-    const container = document.querySelector('.container');
-    if (container) {
-      container.insertBefore(printHeader, container.firstChild);
+  if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+    google.accounts.id.initialize({
+      client_id: "1059045077738-ohkb0nupq7kh69kj3i5io9n1rbjmfn8m.apps.googleusercontent.com",
+      callback: handleCredentialResponse
+    });
+
+    const signInBtn = document.getElementById('googleSignInBtn');
+    if (signInBtn) {
+      google.accounts.id.renderButton(signInBtn, { theme: 'outline', size: 'large' });
     }
   }
 });
@@ -152,20 +152,6 @@ function restoreFormDraft() {
   }
 }
 
-window.onload = function() {
-  if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
-    google.accounts.id.initialize({
-      client_id: "1059045077738-ohkb0nupq7kh69kj3i5io9n1rbjmfn8m.apps.googleusercontent.com",
-      callback: handleCredentialResponse
-    });
-
-    const signInBtn = document.getElementById('googleSignInBtn');
-    if (signInBtn) {
-      google.accounts.id.renderButton(signInBtn, { theme: 'outline', size: 'large' });
-    }
-  }
-};
-
 function handleCredentialResponse(response) {
   const responsePayload = parseJwt(response.credential);
   window.currentUserGoogleId = responsePayload.sub;
@@ -187,6 +173,12 @@ function saveUserProfile(googleUserId) {
   if (!googleUserId) return;
   const form = document.getElementById('permissionForm');
   const profileData = extractFormData(form, { skipSignatures: true });
+  delete profileData['Form Type'];
+
+  const cacheKey = `user_profile_${googleUserId}`;
+  let cached = {};
+  try { cached = JSON.parse(localStorage.getItem(cacheKey)) || {}; } catch (e) {}
+  localStorage.setItem(cacheKey, JSON.stringify(Object.assign(cached, profileData)));
 
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
@@ -208,7 +200,7 @@ function loadUserProfile(googleUserId) {
   if (!googleUserId) return;
 
   const localCache = localStorage.getItem(`user_profile_${googleUserId}`);
-  if (localCache) {
+  if (localCache && localCache !== '{}') {
     populateFormFields(document.getElementById('permissionForm'), JSON.parse(localCache), { skipSignatures: true });
     return;
   }
@@ -216,7 +208,7 @@ function loadUserProfile(googleUserId) {
   fetch(`${APPS_SCRIPT_URL}?action=getProfile&googleUserId=${googleUserId}`)
     .then(res => res.json())
     .then(profileData => {
-      if (profileData && !profileData.error) {
+      if (profileData && !profileData.error && Object.keys(profileData).length > 0) {
         populateFormFields(document.getElementById('permissionForm'), profileData, { skipSignatures: true });
         localStorage.setItem(`user_profile_${googleUserId}`, JSON.stringify(profileData));
         saveFormDraft(window.currentTripId);
@@ -319,5 +311,7 @@ function populateFormFields(form, data, options = { skipSignatures: false }) {
     renderYouthSelector(data.youthProfiles);
   }
 }
+
+
 
 																															            

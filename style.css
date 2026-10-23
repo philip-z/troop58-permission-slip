@@ -228,6 +228,16 @@ fieldset.form-section {
   margin-top: 5px;
 }
 
+.print-header {
+  display: none;
+  text-align: center;
+  margin-bottom: 12px;
+  font-size: 18px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 @media (max-width: 640px) {
   body {
     padding: 8px;
@@ -319,18 +329,6 @@ fieldset.form-section {
 
   .print-header {
     display: block;
-    text-align: center;
-    margin-bottom: 12px;
-    font-size: 18px;
-    font-weight: bold;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-}
-
-@media screen {
-  .print-header {
-    display: none;
   }
 }
 
