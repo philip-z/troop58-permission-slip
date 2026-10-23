@@ -269,7 +269,7 @@ function renderYouthSelector(youthProfiles) {
     `;
 
     const scoutSection = document.getElementById('youthSection');
-    if (scoutSection) scoutSection.insertAdjacentHTML('afterend', html);
+    if (scoutSection) scoutSection.querySelector('legend').insertAdjacentHTML('afterend', html);
     selector = document.getElementById('scoutSelector');
     selector.addEventListener('change', e => onScoutSelected(e.target.value));
   }
