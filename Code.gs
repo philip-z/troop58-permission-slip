@@ -321,8 +321,10 @@ function renderSlipHtml_(data, trip, now) {
   var tz = Session.getScriptTimeZone();
 
   var statements = isAdult
-    ? ['I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for me, should the need arise.']
-    : ['I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for my son, should the need arise.',
+    ? ['I ' + (data['Adult Name'] || '') + ' am over 18 years of age and will participate in the Troop 58 activity described above.',
+       'I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for me, should the need arise.']
+    : ['Having full confidence that every precaution will be taken to ensure the safety of my child ' + (data['Youth Name'] || '') + ', I hereby give permission for them to participate in the Troop 58 activity described above.',
+       'I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for my son, should the need arise.',
        'I have read and understand this form, and I agree to comply with Troop 58\u2019s electronic device policies to provide a distraction free outdoor experience for all participants.'];
   var esign = 'By typing their full legal name and clicking Submit, the signer acknowledged that the typed name is their official, legal, and binding signature, equivalent to a handwritten signature.';
 
