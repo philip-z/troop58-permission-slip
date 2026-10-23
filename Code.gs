@@ -10,6 +10,45 @@ var MAX_FIELDS = 80;
 var MAX_PAYLOAD_CHARS = 60000;
 var HONEYPOT_FIELD = 'website_url';
 
+// Diagnostic log: appends a row to a 'Log' sheet. Never throws and never logs
+// tokens or personal data.
+var tokenFailReason_ = '';
+function logEvent_(stage, detail) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Log');
+    if (!sheet) {
+      sheet = ss.insertSheet('Log');
+      sheet.appendRow(['Timestamp', 'Stage', 'Detail']);
+      sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
+    }
+    sheet.appendRow([new Date(), stage, String(detail === undefined ? '' : detail).substring(0, 2000)]);
+  } catch (e) {
+    console.error('Log failed: ' + e);
+  }
+}
+
+// Run this once from the editor (select it in the function dropdown, click Run).
+// It exercises Drive, UrlFetch, Cache, Lock and the Log sheet so Google shows
+// the permission prompt if any scope is missing, and records each result in Log.
+function runDiagnostics() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  logEvent_('diag start', 'diagnostics started');
+  var steps = {
+    'Drive parent folder': function() { return DriveApp.getFileById(ss.getId()).getParents().hasNext() ? 'ok' : 'NO PARENT FOLDER'; },
+    'UrlFetch': function() { return UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=x', { muteHttpExceptions: true }).getResponseCode(); },
+    'Cache': function() { CacheService.getScriptCache().put('diag', '1', 5); return 'ok'; },
+    'Lock': function() { var l = LockService.getScriptLock(); l.waitLock(5000); l.releaseLock(); return 'ok'; },
+    'Profiles sheet': function() { return ss.getSheetByName('Profiles') ? 'exists' : 'missing (created on first save)'; },
+    'Trips sheet': function() { return ss.getSheetByName('Trips') ? 'exists' : 'MISSING'; },
+    'PDF render': function() { return HtmlService.createHtmlOutput('<p>x</p>').getBlob().getAs('application/pdf').getBytes().length + ' bytes'; }
+  };
+  Object.keys(steps).forEach(function(name) {
+    try { logEvent_('diag ' + name, steps[name]()); }
+    catch (err) { logEvent_('diag ' + name + ' FAILED', err); }
+  });
+}
+
 function doGet(e) {
   try {
     // Public, non-sensitive trip configuration only. Profiles are no longer served via GET.
@@ -39,6 +78,7 @@ function doPost(e) {
   try {
     var raw = e.postData.contents;
     var data = JSON.parse(raw);
+    logEvent_('doPost', 'action=' + (data.action || 'submit') + ' hasToken=' + !!(data._idToken || data.idToken) + ' chars=' + raw.length);
 
     // PROFILE ROUTES: the user ID comes ONLY from a verified Google ID token.
     // Any googleUserId sent by the client is ignored.
@@ -50,8 +90,9 @@ function doPost(e) {
 
     if (data.action === 'saveProfile') {
       var writerId = verifyGoogleToken_(data.idToken);
-      if (!writerId) return jsonOut_({ status: 'error', message: 'unauthorized' });
-      saveOrUpdateUserProfile(writerId, sanitizeFields_(data.profileData || {}, []));
+      if (!writerId) { logEvent_('saveProfile unauthorized', tokenFailReason_); return jsonOut_({ status: 'error', message: 'unauthorized' }); }
+      saveProfileAndYouth_(writerId, sanitizeFields_(data.profileData || {}, []));
+      logEvent_('saveProfile ok', 'fields=' + Object.keys(data.profileData || {}).length);
       return jsonOut_({ status: 'success' });
     }
 
@@ -59,6 +100,7 @@ function doPost(e) {
     // Soft anti-spam: trim and flag, never reject.
     var flags = [];
     var submittedTripRevision = data._tripRevision;
+    var submittedIdToken = data._idToken;
     if (raw.length > MAX_PAYLOAD_CHARS) flags.push('Oversized payload');
     var honeypotFilled = !!(data[HONEYPOT_FIELD] && String(data[HONEYPOT_FIELD]).trim() !== '');
     if (honeypotFilled) flags.push('Honeypot filled');
@@ -95,7 +137,8 @@ function doPost(e) {
           });
         }
         console.error('PDF archive failed: ' + pdfErr);
-        flags.push('PDF failed');
+        logEvent_('PDF failed', pdfErr + ' | ' + (pdfErr && pdfErr.stack || ''));
+        flags.push('PDF failed: ' + String(pdfErr && pdfErr.message || pdfErr).substring(0, 200));
       }
     }
     data['Flags'] = flags.join('; ');
@@ -148,6 +191,27 @@ function doPost(e) {
     // 6. Append entry row
     sheet.appendRow(rowData);
 
+    // 7. Save the signed-in parent's profile (never blocks the submission).
+    if (!submittedIdToken) logEvent_('profile skipped', 'no _idToken in submission (not signed in, or old page cached)');
+    if (submittedIdToken && !honeypotFilled) {
+      try {
+        var profileId = verifyGoogleToken_(submittedIdToken);
+        if (!profileId) logEvent_('profile skipped: token rejected', tokenFailReason_);
+        if (profileId) {
+          var profileData = {};
+          Object.keys(data).forEach(function(k) {
+            if (k === 'Form Type' || k.toLowerCase().indexOf('signature') !== -1) return;
+            profileData[k] = data[k];
+          });
+          saveProfileAndYouth_(profileId, profileData);
+          logEvent_('profile saved', 'fields=' + Object.keys(profileData).length);
+        }
+      } catch (profErr) {
+        console.error('Profile save failed: ' + profErr);
+        logEvent_('profile save FAILED', profErr + ' | ' + (profErr && profErr.stack || ''));
+      }
+    }
+
     return jsonOut_({ status: "success" });
 
   } catch (err) {
@@ -165,7 +229,8 @@ function getOAuthClientId_() {
 
 // Returns the verified Google user ID (the token's 'sub'), or null if the token is invalid.
 function verifyGoogleToken_(idToken) {
-  if (!idToken || typeof idToken !== 'string') return null;
+  tokenFailReason_ = '';
+  if (!idToken || typeof idToken !== 'string') { tokenFailReason_ = 'missing token'; return null; }
   try {
     var cache = CacheService.getScriptCache();
     var key = 'tok_' + Utilities.base64EncodeWebSafe(
@@ -176,11 +241,11 @@ function verifyGoogleToken_(idToken) {
     var res = UrlFetchApp.fetch(
       'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken),
       { muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) return null;
+    if (res.getResponseCode() !== 200) { tokenFailReason_ = 'tokeninfo HTTP ' + res.getResponseCode() + ' ' + res.getContentText().substring(0, 200); return null; }
 
     var info = JSON.parse(res.getContentText());
-    if (info.aud !== getOAuthClientId_()) return null;      // must be minted for THIS client
-    if (Number(info.exp) * 1000 < Date.now()) return null;  // not expired
+    if (info.aud !== getOAuthClientId_()) { tokenFailReason_ = 'aud mismatch: token aud=' + info.aud + ' expected=' + getOAuthClientId_(); return null; }     // must be minted for THIS client
+    if (Number(info.exp) * 1000 < Date.now()) { tokenFailReason_ = 'token expired'; return null; }  // not expired
     if (!info.sub) return null;
 
     var ttl = Math.min(300, Math.floor(Number(info.exp) - Date.now() / 1000));
@@ -188,6 +253,7 @@ function verifyGoogleToken_(idToken) {
     return String(info.sub);
   } catch (err) {
     console.error('Token verification failed: ' + err);
+    tokenFailReason_ = 'exception: ' + err;
     return null;
   }
 }
@@ -405,10 +471,12 @@ function getUserProfile(googleUserId) {
           }
           profile[key] = v;
         }
+        profile.youthProfiles = getYouthProfiles_(id);
         return profile;
       }
     }
-    return null; // Profile not found
+    var youth = getYouthProfiles_(id);
+    return youth.length ? { youthProfiles: youth } : null; // Profile not found
   } catch (err) {
     console.error("Error fetching profile: " + err);
     return null;
@@ -492,5 +560,99 @@ function saveOrUpdateUserProfile(googleUserId, profileData) {
     sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);
   } finally {
     lock.releaseLock();
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// MULTIPLE YOUTH PER PARENT
+// 'Youth ...' fields are stored one row per scout in a 'Youth Profiles' sheet
+// (key: Google ID + Youth Name). Everything else stays in the single-row
+// 'Profiles' sheet.
+// ---------------------------------------------------------------------------
+
+function saveProfileAndYouth_(googleUserId, fields) {
+  var parentFields = {};
+  var youthFields = {};
+  Object.keys(fields).forEach(function(k) {
+    if (k.indexOf('Youth ') === 0) youthFields[k] = fields[k];
+    else parentFields[k] = fields[k];
+  });
+  saveOrUpdateUserProfile(googleUserId, parentFields);
+  saveYouthProfile_(googleUserId, youthFields);
+}
+
+function saveYouthProfile_(googleUserId, youthFields) {
+  var name = String(youthFields['Youth Name'] || '').trim();
+  if (!name) return;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Youth Profiles');
+    if (!sheet) {
+      sheet = ss.insertSheet('Youth Profiles');
+      sheet.appendRow(['Google ID']);
+      sheet.getRange(1, 1).setFontWeight('bold');
+    }
+    var headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0]
+      .map(function(h) { return h.toString().trim(); });
+    Object.keys(youthFields).forEach(function(key) {
+      if (headers.indexOf(key) === -1) {
+        sheet.getRange(1, headers.length + 1).setValue(key).setFontWeight('bold');
+        headers.push(key);
+      }
+    });
+
+    var id = String(googleUserId);
+    var nameCol = headers.indexOf('Youth Name');
+    var data = sheet.getDataRange().getValues();
+    var rowIndex = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === id &&
+          String(data[i][nameCol]).trim().toLowerCase() === name.toLowerCase()) {
+        rowIndex = i + 1;
+        break;
+      }
+    }
+    var existing = rowIndex > 0 ? data[rowIndex - 1] : [];
+    var row = headers.map(function(h, idx) {
+      if (h === 'Google ID') return id;
+      var v = youthFields[h];
+      if (v !== undefined && v !== null) return v;
+      return existing[idx] !== undefined ? existing[idx] : '';
+    });
+    var target = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
+    sheet.getRange(target, 1).setNumberFormat('@');
+    sheet.getRange(target, 1, 1, row.length).setValues([row]);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getYouthProfiles_(googleUserId) {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Youth Profiles');
+    if (!sheet) return [];
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return [];
+    var headers = data[0].map(function(h) { return h.toString().trim(); });
+    var id = String(googleUserId);
+    var out = [];
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) !== id) continue;
+      var y = {};
+      for (var j = 1; j < headers.length; j++) {
+        if (headers[j] === '') continue;
+        var v = data[i][j];
+        if (v instanceof Date) v = Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+        y[headers[j]] = v;
+      }
+      out.push(y);
+    }
+    return out;
+  } catch (err) {
+    console.error('Error fetching youth profiles: ' + err);
+    return [];
   }
 }
