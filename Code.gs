@@ -10,18 +10,21 @@ var MAX_FIELDS = 80;
 var MAX_PAYLOAD_CHARS = 60000;
 var HONEYPOT_FIELD = 'website_url';
 
-// Diagnostic log: appends a row to a 'Log' sheet. Never throws and never logs
-// tokens or personal data.
+// Version label of the legal wording on the form (index.html). Bump it (e.g. a date) whenever
+// the waiver, e-signature or other agreement text changes, and tag that commit in git, so every
+// response row can be matched to the exact text it was signed under.
+var FORM_VERSION = '2026-10-26';
+
+// Diagnostic log: appends a row to the log sheet. Logging is toggled by renaming
+// the sheet: 'Log(Enabled)' logs, 'Log(Disabled)' (or no sheet) does not.
+// Never throws and never logs tokens or personal data.
+var LOG_SHEET_ENABLED = 'Log(Enabled)';
 var tokenFailReason_ = '';
 function logEvent_(stage, detail) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('Log');
-    if (!sheet) {
-      sheet = ss.insertSheet('Log');
-      sheet.appendRow(['Timestamp', 'Stage', 'Detail']);
-      sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
-    }
+    var sheet = ss.getSheetByName(LOG_SHEET_ENABLED);
+    if (!sheet) return;
     sheet.appendRow([new Date(), stage, String(detail === undefined ? '' : detail).substring(0, 2000)]);
   } catch (e) {
     console.error('Log failed: ' + e);
@@ -29,19 +32,27 @@ function logEvent_(stage, detail) {
 }
 
 // Run this once from the editor (select it in the function dropdown, click Run).
-// It exercises Drive, UrlFetch, Cache, Lock and the Log sheet so Google shows
+// It exercises UrlFetch, Cache, Lock and the Log sheet so Google shows
 // the permission prompt if any scope is missing, and records each result in Log.
 function runDiagnostics() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(LOG_SHEET_ENABLED)) {
+    var disabled = ss.getSheetByName('Log(Disabled)');
+    if (disabled) {
+      disabled.setName(LOG_SHEET_ENABLED);
+    } else {
+      var created = ss.insertSheet(LOG_SHEET_ENABLED);
+      created.appendRow(['Timestamp', 'Stage', 'Detail']);
+      created.getRange(1, 1, 1, 3).setFontWeight('bold');
+    }
+  }
   logEvent_('diag start', 'diagnostics started');
   var steps = {
-    'Drive parent folder': function() { return DriveApp.getFileById(ss.getId()).getParents().hasNext() ? 'ok' : 'NO PARENT FOLDER'; },
     'UrlFetch': function() { return UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=x', { muteHttpExceptions: true }).getResponseCode(); },
     'Cache': function() { CacheService.getScriptCache().put('diag', '1', 5); return 'ok'; },
     'Lock': function() { var l = LockService.getScriptLock(); l.waitLock(5000); l.releaseLock(); return 'ok'; },
     'Profiles sheet': function() { return ss.getSheetByName('Profiles') ? 'exists' : 'missing (created on first save)'; },
-    'Trips sheet': function() { return ss.getSheetByName('Trips') ? 'exists' : 'MISSING'; },
-    'PDF render': function() { return HtmlService.createHtmlOutput('<p>x</p>').getBlob().getAs('application/pdf').getBytes().length + ' bytes'; }
+    'Trips sheet': function() { return ss.getSheetByName('Trips') ? 'exists' : 'MISSING'; }
   };
   Object.keys(steps).forEach(function(name) {
     try { logEvent_('diag ' + name, steps[name]()); }
@@ -105,6 +116,7 @@ function doPost(e) {
     var honeypotFilled = !!(data[HONEYPOT_FIELD] && String(data[HONEYPOT_FIELD]).trim() !== '');
     if (honeypotFilled) flags.push('Honeypot filled');
 
+    var slipSnapshot = data._slipSnapshot; // read before sanitizeFields_ drops '_' keys
     data = sanitizeFields_(data, flags);
 
     var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
@@ -122,25 +134,10 @@ function doPost(e) {
     }
 
     // Always overwrite server-controlled columns so a client can't spoof them.
-    data['PDF Link'] = '';
-    // A honeypot hit is still saved as a row for review, but doesn't get a PDF in Drive.
-    // A PDF failure must never block the submission itself.
-    if (!honeypotFilled) {
-      try {
-        data['PDF Link'] = archiveSubmissionPdf_(data, submittedTripRevision).getUrl();
-      } catch (pdfErr) {
-        if (pdfErr.code === 'TRIP_CHANGED') {
-          return jsonOut_({
-            status: 'error',
-            code: 'trip_changed',
-            message: 'Trip details have changed. Reload the page, review the updated trip details, and sign again.'
-          });
-        }
-        console.error('PDF archive failed: ' + pdfErr);
-        logEvent_('PDF failed', pdfErr + ' | ' + (pdfErr && pdfErr.stack || ''));
-        flags.push('PDF failed: ' + String(pdfErr && pdfErr.message || pdfErr).substring(0, 200));
-      }
-    }
+    data['tripId'] = displayValue_(trip.tripId); // always from the Trips sheet, never the browser
+    data['formVersion'] = FORM_VERSION;
+    data['wordingHash'] = wordingHash_(slipSnapshot);
+    if (!data['wordingHash']) flags.push('No wording hash');
     data['Flags'] = flags.join('; ');
 
     var sheet = ss.getSheetByName('Responses') || ss.getSheets()[1];
@@ -200,7 +197,7 @@ function doPost(e) {
         if (profileId) {
           var profileData = {};
           Object.keys(data).forEach(function(k) {
-            if (k === 'Form Type' || k.toLowerCase().indexOf('signature') !== -1) return;
+            if (k === 'Form Type' || k === 'tripId' || k === 'formVersion' || k === 'wordingHash' || k.toLowerCase().indexOf('signature') !== -1) return;
             profileData[k] = data[k];
           });
           saveProfileAndYouth_(profileId, profileData);
@@ -223,8 +220,13 @@ function doPost(e) {
 // AUTH + INPUT HYGIENE
 // ---------------------------------------------------------------------------
 
-function getOAuthClientId_() {
-  return PropertiesService.getScriptProperties().getProperty('OAUTH_CLIENT_ID') || DEFAULT_OAUTH_CLIENT_ID;
+// Client IDs whose tokens are accepted. The test client is only accepted when the
+// Script Property ALLOW_TEST_CLIENT is 'true', so production stays locked to one client.
+function getAllowedClientIds_() {
+  var props = PropertiesService.getScriptProperties();
+  var ids = [props.getProperty('OAUTH_CLIENT_ID') || DEFAULT_OAUTH_CLIENT_ID];
+//  if (props.getProperty('ALLOW_TEST_CLIENT') === 'true') ids.push(TEST_OAUTH_CLIENT_ID);
+  return ids;
 }
 
 // Returns the verified Google user ID (the token's 'sub'), or null if the token is invalid.
@@ -244,7 +246,7 @@ function verifyGoogleToken_(idToken) {
     if (res.getResponseCode() !== 200) { tokenFailReason_ = 'tokeninfo HTTP ' + res.getResponseCode() + ' ' + res.getContentText().substring(0, 200); return null; }
 
     var info = JSON.parse(res.getContentText());
-    if (info.aud !== getOAuthClientId_()) { tokenFailReason_ = 'aud mismatch: token aud=' + info.aud + ' expected=' + getOAuthClientId_(); return null; }     // must be minted for THIS client
+    if (getAllowedClientIds_().indexOf(info.aud) === -1) { tokenFailReason_ = 'aud mismatch: token aud=' + info.aud + ' expected one of=' + getAllowedClientIds_().join(','); return null; }     // must be minted for THIS client
     if (Number(info.exp) * 1000 < Date.now()) { tokenFailReason_ = 'token expired'; return null; }  // not expired
     if (!info.sub) return null;
 
@@ -262,7 +264,7 @@ function verifyGoogleToken_(idToken) {
 // value length (flagging when it trims), and flattens arrays/objects to strings.
 function sanitizeFields_(input, flags) {
   var blocked = { 'action': true, 'idToken': true, 'googleUserId': true,
-                  'Flags': true, 'PDF Link': true };
+                  'Flags': true, 'PDF Link': true, 'tripId': true, 'formVersion': true, 'wordingHash': true };
   blocked[HONEYPOT_FIELD] = true;
 
   var clean = {};
@@ -286,49 +288,6 @@ function sanitizeFields_(input, flags) {
     count++;
   });
   return clean;
-}
-
-// ---------------------------------------------------------------------------
-// PDF ARCHIVE
-// Layout in Drive (next to the spreadsheet):
-//   <folder containing the sheet>/Permission Slips/<Trip title - dates>/<slip>.pdf
-// Duplicate submissions are all kept: every filename carries a timestamp.
-// ---------------------------------------------------------------------------
-
-function archiveSubmissionPdf_(data, expectedTripRevision) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var now = new Date();
-  var trip = getLatestTripConfig_(ss);
-  if (trip._tripRevision !== expectedTripRevision) {
-    var err = new Error('Trip details changed');
-    err.code = 'TRIP_CHANGED';
-    throw err;
-  }
-
-  // Only the folder lookup/creation is locked, so two simultaneous submissions
-  // can't create duplicate trip folders.
-  var tripFolder;
-  var lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
-    var root = DriveApp.getFileById(ss.getId()).getParents().next();
-    var slipsFolder = getOrCreateFolder_(root, 'Permission Slips');
-    tripFolder = getOrCreateFolder_(slipsFolder, tripFolderName_(trip));
-  } finally {
-    lock.releaseLock();
-  }
-
-  var pdf = HtmlService.createHtmlOutput(renderSlipHtml_(data, trip, now))
-    .getBlob()
-    .getAs('application/pdf')
-    .setName(slipFileName_(data, now) + '.pdf');
-
-  return tripFolder.createFile(pdf);
-}
-
-function getOrCreateFolder_(parent, name) {
-  var it = parent.getFoldersByName(name);
-  return it.hasNext() ? it.next() : parent.createFolder(name);
 }
 
 // Reads the latest row of the Trips sheet (same source doGet uses). The trip
@@ -365,82 +324,27 @@ function displayValue_(v) {
   return v === undefined || v === null ? '' : String(v);
 }
 
-function safeName_(s) {
-  return String(s || '')
-    .replace(/[\\\/:*?"<>|]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .substring(0, 100);
-}
-
-function tripFolderName_(trip) {
-  var title = displayValue_(trip.tripTitle);
-  var dates = displayValue_(trip.tripDates);
-  var name = safeName_(title + (dates ? ' - ' + dates : ''));
-  return name || 'Unknown Trip';
-}
-
-function slipFileName_(data, now) {
-  var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
-  var person = isAdult ? data['Adult Name'] : data['Youth Name'];
-  var stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HHmmss');
-  return safeName_((isAdult ? 'Adult' : 'Youth') + ' - ' + (person || 'Unnamed') + ' - ' + stamp);
-}
-
-function escapeHtml_(s) {
-  return String(s === undefined || s === null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-// Builds a simple HTML document for the PDF. Apps Script's HTML-to-PDF
-// converter supports only basic CSS, so this is a clean record of the slip,
-// not a pixel copy of the web page. EVERY submitted value is escaped.
-// NOTE: the statements below are a copy of the wording on the web form. If the
-// wording in index.html changes, update it here too.
-function renderSlipHtml_(data, trip, now) {
-  var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
-  var tz = Session.getScriptTimeZone();
-
-  var statements = isAdult
-    ? ['I ' + (data['Adult Name'] || '') + ' am over 18 years of age and will participate in the Troop 58 activity described above.',
-       'I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for me, should the need arise.']
-    : ['Having full confidence that every precaution will be taken to ensure the safety of my child ' + (data['Youth Name'] || '') + ', I hereby give permission for them to participate in the Troop 58 activity described above.',
-       'I waive all claims against the leaders of this trip and their families and give permission for them to seek any emergency medical or surgical care deemed necessary for my son, should the need arise.',
-       'I have read and understand this form, and I agree to comply with Troop 58\u2019s electronic device policies to provide a distraction free outdoor experience for all participants.'];
-  var esign = 'By typing their full legal name and clicking Submit, the signer acknowledged that the typed name is their official, legal, and binding signature, equivalent to a handwritten signature.';
-
-  var skip = { 'Form Type': true, 'PDF Link': true, 'Flags': true, 'action': true };
-  var rows = Object.keys(data).filter(function(k) {
-    return !k.startsWith('_') && !skip[k];
-  }).map(function(k) {
-    var v = data[k];
-    if (Array.isArray(v)) v = v.join(', ');
-    var isSig = k.toLowerCase().indexOf('signature') !== -1 && k.toLowerCase().indexOf('date') === -1;
-    var valHtml = escapeHtml_(v);
-    if (isSig) valHtml = '<i style="font-size:15pt;">' + valHtml + '</i>';
-    return '<tr><td style="width:38%;padding:4px 6px;border-bottom:1px solid #ddd;color:#444;"><b>' +
-      escapeHtml_(k) + '</b></td><td style="padding:4px 6px;border-bottom:1px solid #ddd;">' + valHtml + '</td></tr>';
-  }).join('');
-
-  var tripLines = [
-    ['Location', trip.tripLocation], ['Dates', trip.tripDates],
-    ['Cost', trip.tripCost], ['Coordinator', trip.tripCoordinator]
-  ].filter(function(p) { return displayValue_(p[1]) !== ''; })
-   .map(function(p) { return '<b>' + p[0] + ':</b> ' + escapeHtml_(displayValue_(p[1])); })
-   .join(' &nbsp;|&nbsp; ');
-
-  return '<html><body style="font-family:Times New Roman,serif;font-size:11pt;">' +
-    '<h2 style="text-align:center;margin:0;">BSA Troop 58 Elsmere</h2>' +
-    '<h3 style="text-align:center;margin:2px 0;">' + escapeHtml_(displayValue_(trip.tripTitle)) + '</h3>' +
-    '<p style="text-align:center;margin:2px 0;">' + tripLines + '</p>' +
-    '<h3 style="text-align:center;margin:12px 0 6px;">' + (isAdult ? 'ADULT' : 'YOUTH') + ' PERMISSION SLIP</h3>' +
-    '<table style="width:100%;border-collapse:collapse;">' + rows + '</table>' +
-    '<p style="margin-top:14px;">' + statements.map(escapeHtml_).join('<br><br>') + '</p>' +
-    '<p style="font-size:10pt;color:#333;">' + escapeHtml_(esign) + '</p>' +
-    '<p style="font-size:9pt;color:#666;">Submitted electronically: ' +
-      Utilities.formatDate(now, tz, 'MMM d, yyyy h:mm:ss a z') + '</p>' +
-    '</body></html>';
+// Validates the client's snapshot of the page the signer saw, and returns a SHA-256 hash of
+// its WORDING only (all fixed text, labels and trip details; not what was typed or which
+// radio was ticked). Rows with the same hash were shown identical text. Returns '' if the
+// snapshot is missing or malformed.
+function wordingHash_(raw) {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 400) return '';
+  var lines = [];
+  for (var i = 0; i < raw.length; i++) {
+    var line = raw[i];
+    if (!line || !Array.isArray(line.segs) || line.segs.length > 60) return '';
+    var text = '';
+    for (var j = 0; j < line.segs.length; j++) {
+      var sg = line.segs[j];
+      if (!sg || typeof sg.s !== 'string') return '';
+      if (sg.v) { text += '\u0001'; continue; } // typed value: marks the blank, not its content
+      text += sg.s.substring(0, 2000).replace(/^\[[X ]\] $/, '[ ] '); // radios: ignore selection
+    }
+    lines.push((Number(line.h) || 0) + ':' + text);
+  }
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, lines.join('\n'), Utilities.Charset.UTF_8)
+    .map(function(b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
 }
 
 // Fetch saved profile by (verified) Google User ID
