@@ -16,7 +16,13 @@
     <div id="printHeader" class="print-header">YOUTH PERMISSION SLIP</div>
 
     <form id="permissionForm">
-      <div id="googleSignInBtn" class="signin"></div>
+      <div class="signin">
+        <div id="googleSignInBtn"></div>
+        <div id="signedInStatus" class="signed-in-status" hidden>
+          <span>Signed in as <strong id="signedInUser"></strong></span>
+          <button type="button" id="signOutBtn" class="link-btn">Sign out</button>
+        </div>
+      </div>
       <img src="images/Troop58Logo.jpg" alt="Troop 58 Logo" class="troop-logo">
 
       <!-- Honeypot: hidden from people, often filled by bots. Submissions with this filled are flagged, not rejected. -->
@@ -55,6 +61,13 @@
 
       <fieldset id="youthSection" class="form-section">
         <legend class="sr-only">Youth permission slip</legend>
+        <div id="scoutSelectorContainer" class="scout-selector" hidden>
+          <label for="scoutSelector"><strong>Select Scout to Pre-fill:</strong></label>
+          <select id="scoutSelector">
+            <option value="">-- Choose a Scout --</option>
+            <option value="new">+ Add Another Scout</option>
+          </select>
+        </div>
         <div class="agreement">
           <strong>The Scout Permission Slip:</strong><br>
           <p>
@@ -124,7 +137,9 @@
             I can drive if needed,
             <label class="inline"><input type="radio" name="drive" value="To"> To</label>
             <label class="inline"><input type="radio" name="drive" value="From"> From;</label>
-            <label class="inline">both ways <input type="radio" name="drive" value="Both"></label>
+            <label class="inline"><input type="radio" name="drive" value="Both"> both ways.</label>
+            <label class="inline"><input type="radio" name="drive" value="Prefer not to drive"> I would prefer not to drive.</label>
+            <label class="inline"><input type="radio" name="drive" value="Cannot drive"> I cannot drive.</label>
           </p>
 
           <div class="training">
@@ -148,13 +163,16 @@
           <div class="vehicle">
             Drivers Insurance and Car Info:
             <label class="inline">Valid Drivers License Yes
-              <input type="text" name="Veh License" placeholder="initial"></label><br>
+            <input type="text" name="Veh License" placeholder="initial"></label><br>
+            <label class="inline">Vehicle Plate<input type="text" name="Veh Plate #" placeholder="Plate #"><input type="text" name="Veh State" placeholder="State"></label><br>
+            <label class="inline">Year <input type="number" name="Veh Year" inputmode="numeric"></label>
+            <label class="inline">Make <input type="text" name="Veh Make" id="vehMake" list="vehMakeList" autocomplete="off"></label>
+            <label class="inline">Model <input type="text" name="Veh Model" id="vehModel" list="vehModelList" autocomplete="off"></label><br>
             <label class="inline"># of Seat belts <input type="number" name="Veh Seats" inputmode="numeric"></label><br>
             <label class="inline">Comfortable Passenger Limit <input type="number" name="Veh Passengers" inputmode="numeric"></label>
             <span class="footnote">(Includes driver)</span><br>
-            <label class="inline">Year <input type="number" name="Veh Year" inputmode="numeric"></label>
-            <label class="inline">Make <input type="text" name="Veh Make"></label>
-            <label class="inline">Model <input type="text" name="Veh Model"></label><br>
+            <datalist id="vehMakeList"></datalist>
+            <datalist id="vehModelList"></datalist>
             <label class="inline">Current Insurance Yes
               <input type="text" name="Veh Insurance" placeholder="initial"></label>
           </div>
