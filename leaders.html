@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Troop 58 Leaders - Add a Trip</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+
+<body>
+  <div class="container">
+    <h2>Troop 58 Leaders: Add a Trip</h2>
+    <p>Sign in with your Google account. Only accounts on the leaders list can add a trip.
+      <strong>The new trip becomes the live permission slip immediately.</strong></p>
+
+    <div id="leaderSignInBtn" class="signin"></div>
+    <p id="signedInAs" role="status" aria-live="polite"></p>
+
+    <form id="tripForm">
+      <p><label for="tripTitle"><strong>Trip title</strong> (required)</label><br>
+        <input type="text" id="tripTitle" name="tripTitle" required maxlength="500" class="input-long"></p>
+      <p><label for="tripLocation"><strong>Location</strong> (required)</label><br>
+        <input type="text" id="tripLocation" name="tripLocation" required maxlength="500" class="input-long"></p>
+      <p><label for="tripDates"><strong>Dates</strong> (required, e.g. Nov 14-16, 2026)</label><br>
+        <input type="text" id="tripDates" name="tripDates" required maxlength="500" class="input-long"></p>
+      <p><label for="departureDetails"><strong>Meet for departure</strong> (place and time)</label><br>
+        <input type="text" id="departureDetails" name="departureDetails" maxlength="500" class="input-long"></p>
+      <p><label for="departureOptions"><strong>Departure options</strong> (optional, one per line). If you list any, parents must choose one on the permission slip.</label><br>
+        <textarea id="departureOptions" name="departureOptions" rows="4" class="input-long" placeholder="Friday 5:00 PM from church lot&#10;Saturday 8:00 AM from church lot"></textarea></p>
+      <p><label for="returnDetails"><strong>Return</strong></label><br>
+        <input type="text" id="returnDetails" name="returnDetails" maxlength="500" class="input-long"></p>
+      <p><label for="tripCost"><strong>Cost</strong></label><br>
+        <input type="text" id="tripCost" name="tripCost" maxlength="500" class="input-long"></p>
+      <p><label for="tripCoordinator"><strong>Coordinator / adult leader on trip</strong></label><br>
+        <input type="text" id="tripCoordinator" name="tripCoordinator" maxlength="500" class="input-long"></p>
+      <p><label for="tripUniform"><strong>Uniform</strong></label><br>
+        <input type="text" id="tripUniform" name="tripUniform" maxlength="500" class="input-long"></p>
+
+      <button type="submit" id="addTripBtn" disabled>Add Trip (goes live immediately)</button>
+    </form>
+    <div id="leaderMessage" role="status" aria-live="polite"></div>
+  </div>
+
+  <script src="leaders.js"></script>
+</body>
+
+</html>

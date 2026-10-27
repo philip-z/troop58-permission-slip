@@ -69,7 +69,21 @@ function doGet(e) {
       throw new Error("Trips configuration Missing");
     }
 
-    var config = getLatestTripConfig_(ss);
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    var config = {};
+
+    if (lastRow > 1 && lastCol > 0) {
+      var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      var tripData = sheet.getRange(lastRow, 1, 1, lastCol).getValues()[0];
+
+      headers.forEach(function(header, idx) {
+        if (header && header.toString().trim() !== "") {
+          var key = header.toString().trim();
+          config[key] = tripData[idx];
+        }
+      });
+    }
 
     return ContentService.createTextOutput(JSON.stringify(config))
       .setMimeType(ContentService.MimeType.JSON);
@@ -90,6 +104,11 @@ function doPost(e) {
     var raw = e.postData.contents;
     var data = JSON.parse(raw);
     logEvent_('doPost', 'action=' + (data.action || 'submit') + ' hasToken=' + !!(data._idToken || data.idToken) + ' chars=' + raw.length);
+
+    // LEADERS ROUTE: verified Google sign-in + email on the Leaders sheet (see Leaders.gs).
+    if (data.action === 'addTrip') {
+      return jsonOut_(addTrip_(data));
+    }
 
     // PROFILE ROUTES: the user ID comes ONLY from a verified Google ID token.
     // Any googleUserId sent by the client is ignored.
@@ -121,17 +140,7 @@ function doPost(e) {
 
     var isAdult = String(data['Form Type']).toLowerCase() === 'adult';
     if (!(isAdult ? data['Adult Name'] : data['Youth Name'])) flags.push('Missing name');
-    if (isAdult ? !data['Adult Signature'] : (!data['Parent Signature'] || !data['Youth Signature'])) flags.push('Missing signature');
-
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var trip = getLatestTripConfig_(ss);
-    if (!submittedTripRevision || submittedTripRevision !== trip._tripRevision) {
-      return jsonOut_({
-        status: 'error',
-        code: 'trip_changed',
-        message: 'Trip details have changed. Reload the page, review the updated trip details, and sign again.'
-      });
-    }
+    if (!(isAdult ? data['Adult Signature'] : data['Youth Signature'])) flags.push('Missing signature');
 
     // Always overwrite server-controlled columns so a client can't spoof them.
     data['tripId'] = displayValue_(trip.tripId); // always from the Trips sheet, never the browser
@@ -140,6 +149,7 @@ function doPost(e) {
     if (!data['wordingHash']) flags.push('No wording hash');
     data['Flags'] = flags.join('; ');
 
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('Responses') || ss.getSheets()[1];
 
     var lastCol = sheet.getLastColumn();
@@ -250,8 +260,7 @@ function verifyGoogleToken_(idToken) {
     if (Number(info.exp) * 1000 < Date.now()) { tokenFailReason_ = 'token expired'; return null; }  // not expired
     if (!info.sub) return null;
 
-    var ttl = Math.min(300, Math.floor(Number(info.exp) - Date.now() / 1000));
-    if (ttl > 0) cache.put(key, String(info.sub), ttl);
+    cache.put(key, String(info.sub), 300);
     return String(info.sub);
   } catch (err) {
     console.error('Token verification failed: ' + err);
@@ -303,17 +312,9 @@ function getLatestTripConfig_(ss) {
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   var row = sheet.getRange(lastRow, 1, 1, lastCol).getValues()[0];
   headers.forEach(function(h, i) {
-    if (h && h.toString().trim() !== '') {
-      config[h.toString().trim()] = row[i];
-    }
+    var key = h.toString().trim();
+    if (key !== '') config[key] = row[i];
   });
-  config._tripRevision = Utilities.base64EncodeWebSafe(
-    Utilities.computeDigest(
-      Utilities.DigestAlgorithm.SHA_256,
-      JSON.stringify([headers, row]),
-      Utilities.Charset.UTF_8
-    )
-  ).replace(/=+$/, '');
   return config;
 }
 
@@ -389,82 +390,76 @@ function getUserProfile(googleUserId) {
 
 // Save or update profile for a (verified) Google User ID
 function saveOrUpdateUserProfile(googleUserId, profileData) {
-  var lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('Profiles');
-    var headers = [];
-    var id = String(googleUserId);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Profiles');
+  var headers = [];
+  var id = String(googleUserId);
 
-    // 1. Ensure the Profiles sheet and the ID column exist
-    if (!sheet) {
-      sheet = ss.insertSheet('Profiles');
+  // 1. Ensure the Profiles sheet and the ID column exist
+  if (!sheet) {
+    sheet = ss.insertSheet('Profiles');
+    headers = ["Google ID"];
+    sheet.appendRow(headers);
+    sheet.getRange(1, 1).setFontWeight("bold");
+  } else {
+    var lastCol = sheet.getLastColumn();
+    if (lastCol > 0) {
+      headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
+        return h.toString().trim();
+      });
+    }
+    if (headers.length === 0 || headers[0] === "") {
       headers = ["Google ID"];
-      sheet.appendRow(headers);
-      sheet.getRange(1, 1).setFontWeight("bold");
-    } else {
-      var lastCol = sheet.getLastColumn();
-      if (lastCol > 0) {
-        headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
-          return h.toString().trim();
-        });
-      }
-      if (headers.length === 0 || headers[0] === "") {
-        headers = ["Google ID"];
-        sheet.getRange(1, 1).setValue("Google ID").setFontWeight("bold");
-      }
+      sheet.getRange(1, 1).setValue("Google ID").setFontWeight("bold");
     }
-
-    var headerMap = {};
-    headers.forEach(function(h, idx) {
-      if (h !== "") headerMap[h] = idx;
-    });
-
-    // 2. Create columns for new profile fields
-    Object.keys(profileData).forEach(function(key) {
-      if (key.startsWith('_') || key === 'Google ID') return;
-
-      if (!(key in headerMap)) {
-        var newColIdx = headers.length;
-        sheet.getRange(1, newColIdx + 1).setValue(key).setFontWeight("bold");
-        headers.push(key);
-        headerMap[key] = newColIdx;
-      }
-    });
-
-    var data = sheet.getDataRange().getValues();
-    var rowIndex = -1;
-
-    // 3. Find if this user already has a row (string comparison)
-    for (var i = 1; i < data.length; i++) {
-      if (String(data[i][0]) === id) {
-        rowIndex = i + 1; // Apps Script ranges are 1-based, array is 0-based
-        break;
-      }
-    }
-
-    var existingRow = rowIndex > 0 ? data[rowIndex - 1] : [];
-
-    // 4. Fields not in this save keep their previously saved value.
-    var rowPayload = headers.map(function(header, idx) {
-      if (header === "Google ID") return id;
-
-      var incoming = profileData[header];
-      if (incoming !== undefined && incoming !== null) {
-        return Array.isArray(incoming) ? incoming.join(', ') : incoming;
-      }
-      var prev = existingRow[idx];
-      return prev !== undefined ? prev : "";
-    });
-
-    // 5. Force column A to plain text so the long numeric Google ID isn't rounded.
-    var targetRow = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
-    sheet.getRange(targetRow, 1).setNumberFormat('@');
-    sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);
-  } finally {
-    lock.releaseLock();
   }
+
+  var headerMap = {};
+  headers.forEach(function(h, idx) {
+    if (h !== "") headerMap[h] = idx;
+  });
+
+  // 2. Create columns for new profile fields
+  Object.keys(profileData).forEach(function(key) {
+    if (key.startsWith('_') || key === 'Google ID') return;
+
+    if (!(key in headerMap)) {
+      var newColIdx = headers.length;
+      sheet.getRange(1, newColIdx + 1).setValue(key).setFontWeight("bold");
+      headers.push(key);
+      headerMap[key] = newColIdx;
+    }
+  });
+
+  var data = sheet.getDataRange().getValues();
+  var rowIndex = -1;
+
+  // 3. Find if this user already has a row (string comparison)
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === id) {
+      rowIndex = i + 1; // Apps Script ranges are 1-based, array is 0-based
+      break;
+    }
+  }
+
+  var existingRow = rowIndex > 0 ? data[rowIndex - 1] : [];
+
+  // 4. Fields not in this save keep their previously saved value.
+  var rowPayload = headers.map(function(header, idx) {
+    if (header === "Google ID") return id;
+
+    var incoming = profileData[header];
+    if (incoming !== undefined && incoming !== null) {
+      return Array.isArray(incoming) ? incoming.join(', ') : incoming;
+    }
+    var prev = existingRow[idx];
+    return prev !== undefined ? prev : "";
+  });
+
+  // 5. Force column A to plain text so the long numeric Google ID isn't rounded.
+  var targetRow = rowIndex > 0 ? rowIndex : sheet.getLastRow() + 1;
+  sheet.getRange(targetRow, 1).setNumberFormat('@');
+  sheet.getRange(targetRow, 1, 1, rowPayload.length).setValues([rowPayload]);
 }
 
 
